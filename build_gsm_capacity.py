@@ -28,7 +28,9 @@ SOURCES = [
     ("V1", "Daily", "2G Capacity File_V1_Daily.rar", "2G Capacity File_V1_Daily.csv"),
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
-OUT = "GSM_Capacity_Enhancement.xlsx"
+# Bump VERSION on every workbook change. Keep the earlier version files.
+VERSION = "v3"
+OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 TRAFFIC_HOURS = 24
 BSC_ORDER = ["MYMH05", "MYMH06", "MYMH07", "SYLH04", "TNGH12"]
 SUM_FIELDS = [
@@ -958,8 +960,8 @@ def build(records):
     summary.set_column("E:E", 22)
     summary.set_column("F:L", 16)
     summary.hide_gridlines(2)
-    summary.write("B1", "GSM capacity enhancement", title_fmt)
-    summary.write("B2", "G900 TRX reduction and G1800 cell addition. Busy hour 26 Oct 2026 to 1 Nov 2026.", section_fmt)
+    summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
+    summary.write("B2", f"{VERSION}. G900 TRX reduction and G1800 cell addition. Busy hour 26 Oct 2026 to 1 Nov 2026.", section_fmt)
     summary.write(
         "B3",
         "Voice load, available TCH, half-rate ratio, TCH congestion, and SDCCH congestion come from the busy-hour files. "
@@ -1098,6 +1100,12 @@ def build(records):
     rules.set_column("B:B", 128)
     rule_lines = [
         "",
+        "Version",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Each change is saved under a new version name. Earlier version files are kept.",
+        "v1: first workbook from the 7-day files. Busy-hour and daily traffic were both multiplied by 24.",
+        "v2: each KPI formula sits in the column immediately after its result. Busy-hour traffic was still multiplied by 24.",
+        "v3: busy-hour Erlang is the one-hour value and is not multiplied by 24. Daily traffic remains the hourly average multiplied by 24. The formula columns from v2 are kept.",
+        "",
         "Purpose",
         "G900 TRX comes down on cells that can release TRX while SDCCH and TCH congestion stay under 1%. A G1800 cell is proposed on a G900 cell whose busy-hour load, handover, quality, drops, or interference meet the addition rule.",
         "",
@@ -1147,9 +1155,9 @@ def build(records):
         "What this file does not do",
         "It does not plan the L900 bandwidth change from 5 MHz to 10 MHz. It does not use the cell database, TRX parameter, co-MPT, or inventory files. It does not choose a G1800 ARFCN, the number of G1800 TRX, or the BCCH. The addition list says which G900 cell gets a G1800 cell.",
     ]
-    rules.write("B1", "Rules applied in this workbook", title_fmt)
+    rules.write("B1", f"Rules applied in this workbook ({VERSION})", title_fmt)
     headings = {
-        "Purpose", "Files", "What comes from the busy hour", "What comes from the daily file",
+        "Version", "Purpose", "Files", "What comes from the busy hour", "What comes from the daily file",
         "Voice load", "Band", "G900 TRX reduction", "G1800 cell addition", "What this file does not do",
     }
     for index, line in enumerate(rule_lines):
@@ -1178,6 +1186,7 @@ def main():
     dates = set()
     for item in records:
         dates.update(item["dates"])
+    print("workbook", OUT)
     print("BH dates", sorted(dates))
     print("cells", len(records), "daily", len(daily_cells), "bh only", len(missing_daily), "daily only", len(missing_bh))
     print("reduce", len(reductions), "trx_remove", sum(item["trx"] - 2 for item in reductions))
