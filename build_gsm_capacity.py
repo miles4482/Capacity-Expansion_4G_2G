@@ -8,6 +8,10 @@ dates present for that cell. Busy-hour Erlang is already one hour, so voice
 load uses that average with no x24. Daily Erlang is an hourly average, so
 daily traffic is that average multiplied by 24.
 
+Capacity Erlang is the Erlang B offered traffic at 5% blocking. The channel
+count is available TCH times 1.60, the fixed 60% half-rate design. It is not
+available TCH times (1 + the measured half-rate ratio).
+
   2G Capacity File_V1_BH.rar
   2G Capacity File_V2_BH.rar
   2G Capacity File_V1_Daily.rar
@@ -29,8 +33,13 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v7"
+VERSION = "v8"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
+GOS = 0.05
+ERLANG_MAX = 200
+G1800_MAX_TRX = 12
+# The load rule stops at 12 TRX. CDR and bad quality can each add one more.
+G1800_TABLE_TRX = 16
 TRAFFIC_HOURS = 24
 BSC_ORDER = ["MYMH05", "MYMH06", "MYMH07", "SYLH04", "TNGH12"]
 SUM_FIELDS = [
@@ -61,21 +70,26 @@ SUM_FIELDS = [
     "UL Quality_D",
     "Interference Band_4-5_Samples",
     "Interference Band Samples_D",
+    "RR307:TCH Availability(%)",
 ]
 
 # Yellow cells on Parameters. All Cells formulas read these names.
+# pICMMin stays at 50 because the new rule says "high ICM band 4-5" and does not give a new percent.
+# pTRXKeep stays at 2: the AND gate says which cells are reduced, and the reduction keeps 2 TRX.
 PARAMS = [
-    ("pVoiceLoadMax", 60, "%", "G900 reduction OR term: busy-hour voice load at or below this"),
-    ("pCDRnMin", 10, "drops/day", "OR term: daily-average CDR_N at or above this"),
-    ("pBadQualMin", 2, "%", "OR term: both DL and UL bad quality (6-7) above this"),
-    ("pCongMax", 1, "%", "Reduction gate: SDCCH congestion and TCH congestion each below this"),
-    ("pVoiceLoadHigh", 70, "%", "G1800 OR term: busy-hour voice load at or above this"),
-    ("pHOSRMax", 90, "%", "G1800 OR term: HOSR_Out at or below this"),
-    ("pCDRMin", 0.2, "%", "G1800 pair: CDR above this, together with ICM"),
-    ("pICMMin", 50, "%", "G1800 pair: ICM band 4-5 above this, together with CDR"),
-    ("pTRXAbove", 2, "TRX", "G900 reduction applies only when configured TRX is above this"),
-    ("pTRXKeep", 2, "TRX", "TRX kept when a G900 cell is reduced"),
-    ("pAddTRXMin", 0, "TRX", "G1800 addition applies at every TRX count. 0 means all scenarios"),
+    ("pTRXAbove", 2, "TRX", "G900 reduction AND gate: configured TRX must be above this"),
+    ("pTRXKeep", 2, "TRX", "TRX kept when the G900 reduction AND gate is met"),
+    ("pTCHCongMax", 1, "%", "G900 reduction AND gate: TCH congestion must be below this"),
+    ("pSDCCHCongMax", 0.5, "%", "G900 reduction AND gate: SDCCH congestion must be below this"),
+    ("pVoiceLoadMax", 40, "%", "G900 reduction AND gate: busy-hour voice load must be at or below this"),
+    ("pTCHAvailMin", 99, "%", "G900 reduction AND gate: busy-hour RR307 TCH availability must be above this"),
+    ("pHR", 0.6, "ratio", "Design half-rate ratio for Erlang B capacity. Equivalent channels = available TCH x (1 + this). The measured K3034/K3014 ratio is not used"),
+    ("pVoiceLoadHigh", 80, "%", "After the G900 reduction step, voice load at or above this starts the G1800 TRX calculation"),
+    ("pVoiceLoadTarget", 60, "%", "G1800 TRX are added until busy-hour voice load is below this"),
+    ("pCDRnMin", 10, "drops/day", "Daily-average CDR_N at or above this adds 1 G1800 TRX"),
+    ("pBadQualMin", 2, "%", "Both DL and UL bad quality above this adds 1 G1800 TRX"),
+    ("pICMMin", 50, "%", "High ICM band 4-5 means ICM_B4~5 above this. Used only when reduction, load, CDR, and bad quality did not trigger"),
+    ("pMaxG1800TRX", G1800_MAX_TRX, "TRX", "Upper limit of the G1800 TRX table used to bring voice load under the target"),
     ("pDailyDays", 7, "days", "Flag a cell when fewer than this many dates are available. Averages use the dates present"),
     ("pTrafficHours", 24, "hours", "Multiply daily traffic Erlang by this after the date average. Busy-hour Erlang is already one hour and is not multiplied."),
 ]
@@ -121,6 +135,197 @@ def col_letter(index):
         index, rem = divmod(index - 1, 26)
         letters = chr(65 + rem) + letters
     return letters
+
+
+def defaults():
+    return {name: value for name, value, _unit, _note in PARAMS}
+
+
+def erlang_b(channels, offered):
+    """Share of calls cleared because every channel is busy."""
+    if channels <= 0:
+        return 1.0
+    if offered <= 0:
+        return 0.0
+    blocking = 1.0
+    for k in range(1, channels + 1):
+        blocking = offered * blocking / (k + offered * blocking)
+    return blocking
+
+
+def offered_traffic(channels, gos=GOS):
+    """Offered Erlang at the target blocking."""
+    low = 1e-12
+    high = max(float(channels) * 2.0, 1.0)
+    for _ in range(80):
+        mid = (low + high) / 2.0
+        if erlang_b(channels, mid) < gos:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2.0
+
+
+def build_erlang_table():
+    table = {0: 0.0}
+    for channels in range(1, ERLANG_MAX + 1):
+        table[channels] = offered_traffic(channels)
+    return table
+
+
+def offered_at(channels, table):
+    """Integer Erlang B row, or a straight line between the two nearest rows."""
+    if channels <= 0:
+        return 0.0
+    if channels >= ERLANG_MAX:
+        return table[ERLANG_MAX]
+    lower = int(channels)
+    if lower < 1:
+        return table[1] * channels
+    fraction = channels - lower
+    if fraction < 1e-12:
+        return table[lower]
+    return table[lower] + fraction * (table[lower + 1] - table[lower])
+
+
+def g1800_tch(trx):
+    """TCH on a new G1800 cell: 8 timeslots per TRX, one BCCH, one SDCCH per two TRX."""
+    if trx <= 0:
+        return 0
+    sdcch = (trx + 1) // 2
+    return 8 * trx - 1 - sdcch
+
+
+def g1800_caps(table, hr):
+    caps = []
+    for trx in range(0, G1800_TABLE_TRX + 1):
+        caps.append(offered_at(g1800_tch(trx) * (1.0 + hr), table))
+    return caps
+
+
+def capacity_of(tch, hr, table):
+    return offered_at(tch * (1.0 + hr), table)
+
+
+def tch_for_trx(avail, configured, kept):
+    if configured <= 0:
+        return 0.0
+    return avail * kept / configured
+
+
+def trx_for_deficit(deficit, caps):
+    """Smallest G1800 TRX count whose Erlang capacity is strictly above the deficit.
+
+    MATCH on an ascending table returns the last row that is still at or below the
+    deficit. The next row is the first one that takes voice load under 60%.
+    """
+    if deficit <= 0:
+        return 0
+    position = 0
+    for index, capacity in enumerate(caps):
+        if capacity <= deficit + 1e-9:
+            position = index
+        else:
+            break
+    return min(G1800_MAX_TRX, position + 1)
+
+
+def decide(band, trx, voice, tch_cong, sdcch_cong, rr307, cdr_n, dl, ul, icm, carried, avail, table, caps, cfg):
+    """Mirror of the All Cells formulas at the saved parameter values."""
+    g900 = band == "G900"
+    load_ok = voice is not None and voice <= cfg["pVoiceLoadMax"]
+    tch_ok = tch_cong < cfg["pTCHCongMax"]
+    sdcch_ok = sdcch_cong < cfg["pSDCCHCongMax"]
+    avail_ok = rr307 > cfg["pTCHAvailMin"]
+    trx_ok = trx > cfg["pTRXAbove"]
+    reduce = g900 and trx_ok and tch_ok and sdcch_ok and load_ok and avail_ok
+    trx_after = min(cfg["pTRXKeep"], trx) if reduce else trx
+    tch_after = tch_for_trx(avail, trx, trx_after)
+    cap_after = capacity_of(tch_after, cfg["pHR"], table)
+    voice_after = (carried / cap_after * 100.0) if cap_after > 0 else None
+    load_high = voice_after is not None and voice_after >= cfg["pVoiceLoadHigh"]
+    cdr_hit = cdr_n is not None and cdr_n >= cfg["pCDRnMin"]
+    qual_hit = dl is not None and ul is not None and dl > cfg["pBadQualMin"] and ul > cfg["pBadQualMin"]
+    icm_hit = icm is not None and icm > cfg["pICMMin"]
+
+    n_load = 0
+    if g900 and load_high:
+        deficit = carried / (cfg["pVoiceLoadTarget"] / 100.0) - cap_after
+        n_load = min(cfg["pMaxG1800TRX"], trx_for_deficit(deficit, caps))
+    n_cdr = 1 if g900 and cdr_hit else 0
+    n_qual = 1 if g900 and qual_hit else 0
+    n_icm = 1 if g900 and (not reduce) and (not load_high) and (not cdr_hit) and (not qual_hit) and icm_hit else 0
+
+    removed_cdr = 1 if g900 and not reduce and cdr_hit and trx >= 3 else 0
+    removed_qual = 1 if g900 and not reduce and qual_hit and trx - removed_cdr >= 3 else 0
+    removed_icm = 1 if n_icm == 1 and trx - removed_cdr - removed_qual >= 3 else 0
+    removed = 0 if reduce else removed_cdr + removed_qual + removed_icm
+    trx_final = trx_after if reduce else max(0, trx - removed)
+    n_add = n_load + n_cdr + n_qual + n_icm
+    if n_add > G1800_TABLE_TRX:
+        raise SystemExit(f"G1800 TRX {n_add} is past the capacity table")
+    tch_final = tch_for_trx(avail, trx, trx_final)
+    cap_final = capacity_of(tch_final, cfg["pHR"], table) + (caps[n_add] if n_add <= G1800_MAX_TRX else caps[-1])
+    voice_final = (carried / cap_final * 100.0) if cap_final > 0 else None
+    return {
+        "reduce": reduce,
+        "trx_after": trx_after,
+        "cap_after": cap_after,
+        "voice_after": voice_after,
+        "load_high": load_high,
+        "cdr_hit": cdr_hit,
+        "qual_hit": qual_hit,
+        "icm_hit": icm_hit,
+        "n_load": n_load,
+        "n_cdr": n_cdr,
+        "n_qual": n_qual,
+        "n_icm": n_icm,
+        "removed_cdr": removed_cdr,
+        "removed_qual": removed_qual,
+        "removed_icm": removed_icm,
+        "trx_final": trx_final,
+        "trx_remove": max(0, trx - trx_final),
+        "n_add": n_add,
+        "cap_final": cap_final,
+        "voice_final": voice_final,
+    }
+
+
+def self_check(table, caps):
+    published = {6: 2.960, 7: 3.738, 14: 9.730, 21: 16.19, 29: 23.83, 36: 30.66}
+    for channels, expected in published.items():
+        if abs(table[channels] - expected) > 0.006:
+            raise SystemExit(f"Erlang B {channels} at 5% is {table[channels]:.4f}, Huawei prints {expected}")
+    cfg = defaults()
+    # All five gates. Low carried traffic stays under 80% after the cut, so no load-driven G1800.
+    quiet = decide("G900", 4, 20, 0.2, 0.1, 99.5, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
+    if not (quiet["reduce"] and quiet["trx_final"] == 2 and quiet["n_add"] == 0 and quiet["trx_remove"] == 2):
+        raise SystemExit(f"quiet reduction failed: {quiet}")
+    # TRX is 2, so the reduction gate fails. Load is already high, so G1800 is sized from the table.
+    hot = decide("G900", 2, 90, 0.1, 0.1, 100, 0, 0.1, 0.1, 1, 16, 14, table, caps, cfg)
+    if hot["reduce"] or hot["n_load"] < 1 or hot["trx_final"] != 2:
+        raise SystemExit(f"high load on 2 TRX failed: {hot}")
+    if hot["n_load"] < G1800_MAX_TRX and not (hot["voice_final"] < cfg["pVoiceLoadTarget"]):
+        raise SystemExit(f"G1800 add did not take load under 60%: {hot}")
+    # No full reduction. CDR and bad quality each add 1 G1800 and, together, remove 2 G900 because 4 TRX allows it.
+    both = decide("G900", 4, 50, 0.2, 0.2, 100, 12, 3, 3, 80, 8, 30, table, caps, cfg)
+    if both["reduce"] or both["n_cdr"] != 1 or both["n_qual"] != 1 or both["n_icm"] != 0 or both["trx_final"] != 2:
+        raise SystemExit(f"CDR and quality path failed: {both}")
+    # ICM only when the other lines are quiet. 4 TRX loses 1.
+    icm_only = decide("G900", 4, 20, 0.2, 0.2, 98, 1, 0.2, 0.2, 70, 3, 30, table, caps, cfg)
+    if icm_only["reduce"] or icm_only["n_icm"] != 1 or icm_only["n_add"] != 1 or icm_only["trx_final"] != 3:
+        raise SystemExit(f"ICM-only path failed: {icm_only}")
+    # Already reduced to 2, so CDR adds a G1800 TRX and does not remove more G900.
+    locked = decide("G900", 4, 20, 0.2, 0.1, 100, 15, 0.2, 0.2, 10, 2, 30, table, caps, cfg)
+    if not locked["reduce"] or locked["trx_final"] != 2 or locked["n_cdr"] != 1 or locked["removed_cdr"] != 0:
+        raise SystemExit(f"locked reduction failed: {locked}")
+    # 3 TRX can lose only one. The second problem still adds its G1800 TRX.
+    short = decide("G900", 3, 50, 0.2, 0.2, 100, 12, 3, 4, 10, 6, 21, table, caps, cfg)
+    if short["reduce"] or short["trx_final"] != 2 or short["n_add"] != 2 or short["trx_remove"] != 1:
+        raise SystemExit(f"3 TRX sequential remove failed: {short}")
+    other = decide("G1800", 4, 10, 0, 0, 100, 20, 5, 5, 90, 4, 20, table, caps, cfg)
+    if other["reduce"] or other["n_add"] or other["trx_remove"]:
+        raise SystemExit(f"non-G900 cell was changed: {other}")
 
 
 def ensure_csvs():
@@ -187,7 +392,7 @@ def ratio(numer, denom):
     return None
 
 
-def prepare(bh_cells, daily_cells):
+def prepare(bh_cells, daily_cells, table, caps, cfg):
     records = []
     for key, item in bh_cells.items():
         days = item["days"]
@@ -199,12 +404,14 @@ def prepare(bh_cells, daily_cells):
         tchh = k3034_avg
         avail = item["K3015:Available TCHs"] / days
         half = (k3034_avg / k3014_avg) if k3014_avg > 0 else 0.0
-        capacity = avail * (1.0 + half)
+        equivalent = avail * (1.0 + cfg["pHR"])
+        capacity = capacity_of(avail, cfg["pHR"], table)
         voice = (carried / capacity * 100.0) if capacity > 0 else None
         tch_cong = (item["TCH Congestion_N"] / item["TCH Congestion_D"] * 100.0) if item["TCH Congestion_D"] > 0 else 0.0
         sdcch_cong = (
             item["K3001:Failed SDCCH Seizures due to Busy SDCCH"] / item["K3000:SDCCH Seizure Requests"] * 100.0
         ) if item["K3000:SDCCH Seizure Requests"] > 0 else 0.0
+        rr307 = item["RR307:TCH Availability(%)"] / days
         trx_values = [int(round(value)) for value in item["trx"]]
         trx = Counter(trx_values).most_common(1)[0][0]
         g900 = item["R3027A:Number of Available Channels (TCHF) (900/850/810 band)"] + item["R3028A:Number of Available Channels (TCHH) (900/850/810 band)"]
@@ -258,38 +465,36 @@ def prepare(bh_cells, daily_cells):
             }
             daily_tch = shown["k3014"] * TRAFFIC_HOURS
 
-        load_le60 = voice is not None and voice <= 60
-        load_ge70 = voice is not None and voice >= 70
-        load_lt70 = voice is not None and voice < 70
-        cdrn_ge10 = cdr_n is not None and cdr_n >= 10
-        both_bad = dl is not None and ul is not None and dl > 2 and ul > 2
-        cong_ok = tch_cong < 1 and sdcch_cong < 1
-        hosr_le90 = hosr is not None and hosr <= 90
-        icm_pair = cdr is not None and icm is not None and cdr > 0.2 and icm > 50
-        reduce = band == "G900" and trx > 2 and cong_ok and (load_le60 or cdrn_ge10 or both_bad)
-        add = band == "G900" and trx >= 0 and (
-            load_ge70 or hosr_le90 or both_bad or cdrn_ge10 or icm_pair
+        plan = decide(
+            band, trx, voice, tch_cong, sdcch_cong, rr307, cdr_n, dl, ul, icm,
+            carried, avail, table, caps, cfg,
         )
-        load_after = (voice * trx / 2.0) if reduce and voice is not None and trx > 0 else None
+        reduce = plan["reduce"]
+        add = plan["n_add"] > 0
 
         reasons_r = []
-        if reduce and load_le60:
-            reasons_r.append("Voice load<=60%")
-        if reduce and cdrn_ge10:
-            reasons_r.append("CDR_N>=10")
-        if reduce and both_bad:
-            reasons_r.append("DL and UL bad quality>2%")
+        if reduce:
+            reasons_r.append(
+                f"TRX>{cfg['pTRXAbove']}, TCH cong<{cfg['pTCHCongMax']}%, "
+                f"SDCCH cong<{cfg['pSDCCHCongMax']}%, voice load<={cfg['pVoiceLoadMax']}%, "
+                f"TCH availability>{cfg['pTCHAvailMin']}%"
+            )
         reasons_a = []
-        if add and load_ge70:
-            reasons_a.append("Voice load>=70%")
-        if add and hosr_le90:
-            reasons_a.append("HOSR_Out<=90%")
-        if add and both_bad:
-            reasons_a.append("DL and UL bad quality>2%")
-        if add and cdrn_ge10:
-            reasons_a.append("CDR_N>=10")
-        if add and icm_pair:
-            reasons_a.append("CDR>0.2% and ICM_B4~5>50%")
+        if plan["n_load"]:
+            reasons_a.append(
+                f"Voice load after G900 step {plan['voice_after']:.1f}% >= {cfg['pVoiceLoadHigh']}%, "
+                f"add {plan['n_load']} G1800 TRX toward <{cfg['pVoiceLoadTarget']}%"
+            )
+        if plan["n_cdr"]:
+            reasons_a.append(f"Daily CDR_N>={cfg['pCDRnMin']}, add 1 G1800 TRX")
+        if plan["n_qual"]:
+            reasons_a.append(f"DL and UL bad quality>{cfg['pBadQualMin']}%, add 1 G1800 TRX")
+        if plan["n_icm"]:
+            reasons_a.append(f"ICM band 4-5>{cfg['pICMMin']}% and no other trigger, add 1 G1800 TRX")
+        if plan["trx_remove"] and not reduce:
+            reasons_a.append(f"G900 TRX reduced by {plan['trx_remove']} because TRX stayed at or above 3")
+        elif add and reduce:
+            reasons_a.append("G900 already reduced to the keep value, so it is not reduced further")
 
         notes = []
         if band == "G1800":
@@ -300,30 +505,25 @@ def prepare(bh_cells, daily_cells):
             notes.append("No 900 or 1800 TCH samples in the busy hour")
         if daily is None:
             notes.append("No matching daily row")
-        if reduce and load_after is not None and load_after > 100:
-            notes.append("Projected BH voice load exceeds 100% after cutting to 2 TRX")
-        elif reduce and load_after is not None and load_after > 60:
-            notes.append("Projected BH voice load exceeds 60% after cutting to 2 TRX")
+        if plan["n_load"] and plan["voice_final"] is not None and plan["voice_final"] >= cfg["pVoiceLoadTarget"]:
+            notes.append(
+                f"Voice load stays at or above {cfg['pVoiceLoadTarget']}% after the G1800 TRX on this row"
+            )
         if days < 7:
             notes.append("BH sample is shorter than 7 days")
         if daily is not None and daily_days < 7:
             notes.append("Daily sample is shorter than 7 days")
 
         if reduce and add:
-            action = "Reduce G900 TRX and add G1800 cell"
+            action = f"Reduce G900 to {plan['trx_final']} TRX and add {plan['n_add']} G1800 TRX"
         elif reduce:
-            action = "Reduce G900 TRX"
+            action = f"Reduce G900 to {plan['trx_final']} TRX"
+        elif add and plan["trx_remove"]:
+            action = f"Add {plan['n_add']} G1800 TRX and remove {plan['trx_remove']} G900 TRX"
         elif add:
-            action = "Add G1800 cell"
+            action = f"Add {plan['n_add']} G1800 TRX"
         else:
             action = "No action"
-
-        if load_ge70:
-            load_band = "High >=70%"
-        elif load_lt70:
-            load_band = "Low <70%"
-        else:
-            load_band = ""
 
         item.update({
             "k3014_avg": k3014_avg,
@@ -335,8 +535,10 @@ def prepare(bh_cells, daily_cells):
             "avail": avail,
             "configured_tch": item["K3016:Configured TCHs"] / days,
             "half_rate": half,
+            "equivalent": equivalent,
             "capacity": capacity,
             "voice": voice,
+            "rr307": rr307,
             "tch_cong": tch_cong,
             "sdcch_cong": sdcch_cong,
             "tchn_avg": item["TCH Congestion_N"] / days,
@@ -362,19 +564,11 @@ def prepare(bh_cells, daily_cells):
             "daily_tch": daily_tch,
             "reduce": reduce,
             "add": add,
-            "load_after": load_after,
+            "plan": plan,
             "reason_r": ", ".join(reasons_r),
-            "reason_a": ", ".join(reasons_a),
+            "reason_a": "; ".join(reasons_a),
             "notes": "; ".join(notes),
             "action": action,
-            "load_band": load_band,
-            "load_le60": load_le60,
-            "load_ge70": load_ge70,
-            "cdrn_ge10": cdrn_ge10,
-            "both_bad": both_bad,
-            "cong_ok": cong_ok,
-            "hosr_le90": hosr_le90,
-            "icm_pair": icm_pair,
         })
         records.append(item)
     records.sort(key=lambda row: (row["gbsc"], row["name"], row["ci"]))
@@ -385,7 +579,7 @@ def blank(value):
     return "" if value is None else value
 
 
-def build(records):
+def build(records, table):
     last = len(records) + 1
     workbook = xlsxwriter.Workbook(OUT, {"strings_to_urls": False, "nan_inf_to_errors": True})
     workbook.set_properties({
@@ -446,7 +640,7 @@ def build(records):
     })
     param_value = workbook.add_format({
         "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1,
-        "bg_color": pale_yellow, "align": "center", "num_format": "0.0",
+        "bg_color": pale_yellow, "align": "center", "num_format": "0.00",
     })
     param_int = workbook.add_format({
         "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1,
@@ -494,7 +688,8 @@ def build(records):
         ("TCHH Traffic Volume_K3034_Avg", "input_num", 26),
         ("Half Rate Traffic Ratio", "formula_ratio", 14),
         ("Available TCHs_K3015_Avg", "input_num", 22),
-        ("Capacity, Erl", "formula_num", 13),
+        ("Equivalent channels", "formula_num", 16),
+        ("Capacity, Erl", "formula_num", 14),
         ("Voice Load, %", "formula_num", 13),
         ("TCH Congestion_N_Avg", "counter", 20),
         ("TCH Congestion_D_Avg", "counter", 20),
@@ -502,6 +697,7 @@ def build(records):
         ("Failed SDCCH Seizures due to Busy SDCCH_K3001_Avg", "counter", 32),
         ("SDCCH Seizure Requests_K3000_Avg", "counter", 26),
         ("SDCCH Cong, %", "formula_num", 13),
+        ("TCH Availability_RR307_Avg", "counter", 24),
         ("Traffic Volume on SDCCH_K3004_Avg", "counter", 28),
         ("Daily Traffic Volume on TCH_K3014_Avg", "counter", 30),
         ("Daily avg TCH, Erl", "formula_num", 14),
@@ -535,39 +731,65 @@ def build(records):
         ("Available Channels TCHF 1800_R3027B_Avg", "counter", 28),
         ("Available Channels TCHH 900_R3028A_Avg", "counter", 28),
         ("Available Channels TCHH 1800_R3028B_Avg", "counter", 28),
-        ("G900 TRX Reduction", "formula_center", 14),
-        ("TRX Keep", "formula_int", 11),
-        ("TRX Remove", "formula_int", 12),
-        ("Voice Load after 2 TRX, %", "formula_num", 16),
-        ("Reduction Reason", "formula_wrap", 36),
-        ("G1800 Cell Addition", "formula_center", 14),
-        ("Voice Load Band", "formula_center", 14),
-        ("Addition Reason", "formula_wrap", 46),
-        ("Action", "formula_wrap", 32),
-        ("Review", "formula_wrap", 42),
         ("F TRX>2", "flag", 11),
-        ("F Cong<1", "flag", 11),
-        ("F Load<=60", "flag", 12),
+        ("F TCH Cong<1", "flag", 13),
+        ("F SDCCH Cong<0.5", "flag", 15),
+        ("F Load<=40", "flag", 12),
+        ("F Avail>99", "flag", 12),
+        ("G900 TRX Reduction", "formula_center", 16),
+        ("TRX after reduction", "formula_int", 14),
+        ("TCH after reduction", "formula_num", 16),
+        ("Capacity after reduction, Erl", "formula_num", 18),
+        ("Voice Load after reduction, %", "formula_num", 18),
+        ("F Load after>=80", "flag", 14),
+        ("G1800 TRX for load", "formula_int", 14),
         ("F CDR_N>=10", "flag", 12),
         ("F DL and UL>2", "flag", 13),
-        ("F Load>=70", "flag", 12),
-        ("F HOSR<=90", "flag", 12),
-        ("F CDR and ICM", "flag", 13),
+        ("F High ICM", "flag", 12),
+        ("G1800 TRX for CDR", "formula_int", 14),
+        ("G1800 TRX for quality", "formula_int", 16),
+        ("G1800 TRX for ICM", "formula_int", 14),
+        ("G900 removed for CDR", "formula_int", 14),
+        ("G900 removed for quality", "formula_int", 16),
+        ("G900 removed for ICM", "formula_int", 14),
+        ("G900 TRX final", "formula_int", 13),
+        ("TRX Remove", "formula_int", 12),
+        ("G1800 TRX Add", "formula_int", 13),
+        ("G1800 Addition", "formula_center", 14),
+        ("TCH final", "formula_num", 12),
+        ("Capacity final, Erl", "formula_num", 16),
+        ("Voice Load final, %", "formula_num", 16),
+        ("Reduction Reason", "formula_wrap", 42),
+        ("Addition Reason", "formula_wrap", 55),
+        ("Action", "formula_wrap", 42),
+        ("Review", "formula_wrap", 42),
     ]
     letter = {name: col_letter(pos) for pos, (name, _kind, _width) in enumerate(columns, start=1)}
 
     def ref(name, row):
         return f"{letter[name]}{row}"
 
+    def erlang_lookup(expr):
+        channels = "'Erlang B 5%'!$A$6:$A$205"
+        offered = "'Erlang B 5%'!$B$6:$B$205"
+        return (
+            f"IF({expr}<=0,0,"
+            f"IF({expr}<1,INDEX({offered},1)*{expr},"
+            f"IF({expr}>=200,INDEX({offered},200),"
+            f"IF(ABS({expr}-INT({expr}))<1E-9,INDEX({offered},MATCH(INT({expr}),{channels},0)),"
+            f"INDEX({offered},MATCH(INT({expr}),{channels},0))+({expr}-INT({expr}))*"
+            f"(INDEX({offered},MATCH(INT({expr})+1,{channels},0))-INDEX({offered},MATCH(INT({expr}),{channels},0)))))))"
+        )
+
     parameters = workbook.add_worksheet("Parameters")
     parameters.set_tab_color(teal)
     parameters.set_column("A:A", 22)
     parameters.set_column("B:B", 14)
     parameters.set_column("C:C", 16)
-    parameters.set_column("D:D", 92)
+    parameters.set_column("D:D", 110)
     parameters.write("A1", "Thresholds used by the All Cells formulas", title_fmt)
-    parameters.write("A2", "Yellow cells are the live inputs. Edit one and Excel recalculates All Cells and the Summary counts. The two action sheets are the saved result at these defaults.", note_fmt)
-    parameters.set_row(1, 32)
+    parameters.write("A2", "Yellow cells are the live inputs. Edit one and Excel recalculates All Cells, the Erlang B lookup, and the Summary counts. The two action sheets are the saved result at these defaults.", note_fmt)
+    parameters.set_row(1, 36)
     for col, text in enumerate(["Name", "Value", "Unit", "Role"]):
         parameters.write(3, col, text, header)
     for row_offset, (name, value, unit, note) in enumerate(PARAMS):
@@ -578,44 +800,91 @@ def build(records):
         parameters.write(excel_row - 1, 2, unit, cell_center)
         parameters.write(excel_row - 1, 3, note, cell_text)
         workbook.define_name(name, f"=Parameters!$B${excel_row}")
-    parameters.set_row(1, 36)
+
+    erlang = workbook.add_worksheet("Erlang B 5%")
+    erlang.set_tab_color("#548235")
+    erlang.freeze_panes(5, 1)
+    erlang.set_column("A:A", 16)
+    erlang.set_column("B:C", 28)
+    erlang.set_column("D:D", 62)
+    erlang.write("A1", "Erlang B offered traffic at 5% blocking", title_fmt)
+    erlang.write("A2", "Capacity, Erl looks up equivalent channels on this sheet. Equivalent channels = Available TCHs x (1 + pHR). pHR is 0.60, so the lookup is not the physical TCH row by itself. A fractional channel count is read on the straight line between the two nearest rows.", note_fmt)
+    erlang.write("A3", "10 channels at 5% = 6.22 Erl. 16 channels, which is 10 TCH at 60% half rate, = 11.54 Erl. Huawei's 5% column: 14 TCH = 9.73, 21 TCH = 16.19, 29 TCH = 23.83, 36 TCH = 30.66.", note_fmt)
+    erlang.set_row(1, 32)
+    erlang.set_row(2, 32)
+    for col, text in enumerate(["Channels N", "Offered traffic at 5%, Erl", "Erl per channel", "Reference"]):
+        erlang.write(4, col, text, header)
+    notes_n = {
+        6: "1 TRX, BCCH + SDCCH",
+        7: "1 TRX, BCCH and SDCCH combined",
+        10: "10 TCH, full rate",
+        14: "2 TRX. Huawei 5% column is 9.73 Erl",
+        16: "10 TCH at 60% half rate. 11.54 Erl",
+        21: "3 TRX. Huawei 5% column is 16.19 Erl",
+        29: "4 TRX. Huawei 5% column is 23.83 Erl",
+        36: "5 TRX. Huawei 5% column is 30.66 Erl",
+    }
+    hi_n = workbook.add_format({"font_name": "Calibri", "font_size": 10, "border": 1, "align": "center", "num_format": "0", "bg_color": pale_yellow, "bold": True})
+    hi_e = workbook.add_format({"font_name": "Calibri", "font_size": 10, "border": 1, "align": "center", "num_format": "0.00", "bg_color": pale_yellow, "bold": True})
+    hi_t = workbook.add_format({"font_name": "Calibri", "font_size": 10, "border": 1, "bg_color": pale_yellow, "valign": "vcenter"})
+    for channels in range(1, ERLANG_MAX + 1):
+        row = 5 + channels - 1
+        marked = channels in notes_n
+        erlang.write_number(row, 0, channels, hi_n if marked else cell_int)
+        erlang.write_number(row, 1, table[channels], hi_e if marked else cell_num)
+        erlang.write_number(row, 2, table[channels] / channels, hi_e if marked else cell_num)
+        erlang.write(row, 3, notes_n.get(channels, ""), hi_t if marked else cell_text)
+
+    g1800 = workbook.add_worksheet("G1800 TRX Capacity")
+    g1800.set_tab_color(blue)
+    g1800.set_column("A:G", 22)
+    g1800.write("A1", "New G1800 cell capacity at 5% blocking and the design half-rate ratio", title_fmt)
+    g1800.write("A2", "TCH = 8 x TRX - 1 BCCH - one SDCCH for every two TRX. Equivalent channels = TCH x (1 + pHR). Capacity is the 5% Erlang B value. All Cells uses this column to choose how many G1800 TRX bring voice load under pVoiceLoadTarget.", note_fmt)
+    g1800.set_row(1, 36)
+    for col, text in enumerate(["TRX", "Timeslots", "BCCH", "SDCCH", "TCH", "Equivalent channels", "Capacity, Erl"]):
+        g1800.write(3, col, text, header)
+    for trx in range(0, G1800_TABLE_TRX + 1):
+        row = 4 + trx
+        excel_row = row + 1
+        g1800.write_number(row, 0, trx, cell_int)
+        g1800.write_formula(row, 1, f"=A{excel_row}*8", cell_int, trx * 8)
+        g1800.write_formula(row, 2, f"=IF(A{excel_row}=0,0,1)", cell_int, 0 if trx == 0 else 1)
+        g1800.write_formula(row, 3, f"=IF(A{excel_row}=0,0,ROUNDUP(A{excel_row}/2,0))", cell_int, 0 if trx == 0 else (trx + 1) // 2)
+        g1800.write_formula(row, 4, f"=IF(A{excel_row}=0,0,B{excel_row}-C{excel_row}-D{excel_row})", cell_int, g1800_tch(trx))
+        g1800.write_formula(row, 5, f"=E{excel_row}*(1+pHR)", cell_num, g1800_tch(trx) * (1 + defaults()["pHR"]))
+        g1800.write_formula(
+            row, 6, "=" + erlang_lookup(f"F{excel_row}"), cell_num,
+            offered_at(g1800_tch(trx) * (1 + defaults()["pHR"]), table),
+        )
+    workbook.define_name("G1800Cap", f"='G1800 TRX Capacity'!$G$5:$G${5 + G1800_TABLE_TRX}")
 
     all_cells = workbook.add_worksheet("All Cells")
     all_cells.set_tab_color("#7F7F7F")
     all_cells.freeze_panes(1, 4)
     all_cells.autofilter(0, 0, len(records), len(columns) - 1)
     all_cells.set_row(0, 48)
-
     decision_orange = {
-        "G900 TRX Reduction", "TRX Keep", "TRX Remove",
-        "Voice Load after 2 TRX, %", "Reduction Reason",
+        "G900 TRX Reduction", "TRX after reduction", "TCH after reduction",
+        "Capacity after reduction, Erl", "Voice Load after reduction, %", "Reduction Reason",
+        "G900 removed for CDR", "G900 removed for quality", "G900 removed for ICM",
+        "G900 TRX final", "TRX Remove",
     }
-    decision_blue = {"G1800 Cell Addition", "Voice Load Band", "Addition Reason"}
+    decision_blue = {
+        "F Load after>=80", "G1800 TRX for load", "G1800 TRX for CDR", "G1800 TRX for quality",
+        "G1800 TRX for ICM", "G1800 TRX Add", "G1800 Addition", "Addition Reason",
+        "TCH final", "Capacity final, Erl", "Voice Load final, %",
+    }
     kind_header = {
-        "input_text": header_gray,
-        "input_int": header_gray,
-        "input_center": header_gray,
-        "input_num": header_gray,
-        "counter": header_gray,
-        "formula_ratio": header,
-        "formula_num": header,
-        "formula_center": header,
-        "formula_int": header,
-        "formula_wrap": header,
-        "flag": header,
+        "input_text": header_gray, "input_int": header_gray, "input_center": header_gray,
+        "input_num": header_gray, "counter": header_gray, "formula_ratio": header,
+        "formula_num": header, "formula_center": header, "formula_int": header,
+        "formula_wrap": header, "flag": header,
     }
     value_formats = {
-        "input_text": input_text,
-        "input_int": input_int,
-        "input_center": input_center,
-        "input_num": input_num,
-        "counter": input_num,
-        "formula_ratio": cell_ratio,
-        "formula_num": cell_num,
-        "formula_center": cell_center,
-        "formula_int": cell_int,
-        "formula_wrap": wrap,
-        "flag": flag_fmt,
+        "input_text": input_text, "input_int": input_int, "input_center": input_center,
+        "input_num": input_num, "counter": input_num, "formula_ratio": cell_ratio,
+        "formula_num": cell_num, "formula_center": cell_center, "formula_int": cell_int,
+        "formula_wrap": wrap, "flag": flag_fmt,
     }
     for pos, (name, kind, width) in enumerate(columns):
         if name in decision_orange:
@@ -632,13 +901,15 @@ def build(records):
     for offset, item in enumerate(records):
         row = offset + 2
         daily = item["daily"] or {}
+        plan = item["plan"]
 
         def F(name, r=row):
             return ref(name, r)
 
         formulas = {
             "Half Rate Traffic Ratio": f'=IF({F("Traffic Volume on TCH_K3014_Avg")}=0,0,{F("TCHH Traffic Volume_K3034_Avg")}/{F("Traffic Volume on TCH_K3014_Avg")})',
-            "Capacity, Erl": f'={F("Available TCHs_K3015_Avg")}*(1+{F("Half Rate Traffic Ratio")})',
+            "Equivalent channels": f'={F("Available TCHs_K3015_Avg")}*(1+pHR)',
+            "Capacity, Erl": "=" + erlang_lookup(F("Equivalent channels")),
             "Voice Load, %": f'=IF({F("Capacity, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity, Erl")}*100)',
             "TCH Cong, %": f'=IF({F("TCH Congestion_D_Avg")}=0,0,{F("TCH Congestion_N_Avg")}/{F("TCH Congestion_D_Avg")}*100)',
             "SDCCH Cong, %": f'=IF({F("SDCCH Seizure Requests_K3000_Avg")}=0,0,{F("Failed SDCCH Seizures due to Busy SDCCH_K3001_Avg")}/{F("SDCCH Seizure Requests_K3000_Avg")}*100)',
@@ -653,76 +924,139 @@ def build(records):
             "Daily avg TCHH, Erl": f'={F("Daily TCHH Traffic Volume_K3034_Avg")}*pTrafficHours',
             "Daily avg SDCCH, Erl": f'={F("Daily Traffic Volume on SDCCH_K3004_Avg")}*pTrafficHours',
             "F TRX>2": f'=IF({F("TRX Configured")}>pTRXAbove,1,0)',
-            "F Cong<1": f'=IF(AND({F("TCH Cong, %")}<pCongMax,{F("SDCCH Cong, %")}<pCongMax),1,0)',
-            "F Load<=60": f'=IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}<=pVoiceLoadMax),1,0)',
+            "F TCH Cong<1": f'=IF({F("TCH Cong, %")}<pTCHCongMax,1,0)',
+            "F SDCCH Cong<0.5": f'=IF({F("SDCCH Cong, %")}<pSDCCHCongMax,1,0)',
+            "F Load<=40": f'=IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}<=pVoiceLoadMax),1,0)',
+            "F Avail>99": f'=IF({F("TCH Availability_RR307_Avg")}>pTCHAvailMin,1,0)',
+            "G900 TRX Reduction": (
+                f'=IF(AND({F("Band")}="G900",{F("F TRX>2")}=1,{F("F TCH Cong<1")}=1,{F("F SDCCH Cong<0.5")}=1,'
+                f'{F("F Load<=40")}=1,{F("F Avail>99")}=1),"Yes","No")'
+            ),
+            "TRX after reduction": f'=IF({F("G900 TRX Reduction")}="Yes",MIN(pTRXKeep,{F("TRX Configured")}),{F("TRX Configured")})',
+            "TCH after reduction": f'=IF({F("TRX Configured")}=0,0,{F("Available TCHs_K3015_Avg")}*{F("TRX after reduction")}/{F("TRX Configured")})',
+            "Capacity after reduction, Erl": "=" + erlang_lookup(f'{F("TCH after reduction")}*(1+pHR)'),
+            "Voice Load after reduction, %": f'=IF({F("Capacity after reduction, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity after reduction, Erl")}*100)',
+            "F Load after>=80": f'=IF(AND(ISNUMBER({F("Voice Load after reduction, %")}),{F("Voice Load after reduction, %")}>=pVoiceLoadHigh),1,0)',
+            "G1800 TRX for load": (
+                f'=IF(OR({F("Band")}<>"G900",{F("F Load after>=80")}<>1),0,'
+                f'IF({F("Traffic Volume on TCH_K3014_Avg")}/(pVoiceLoadTarget/100)-{F("Capacity after reduction, Erl")}<=0,0,'
+                f'MIN(pMaxG1800TRX,MATCH({F("Traffic Volume on TCH_K3014_Avg")}/(pVoiceLoadTarget/100)-{F("Capacity after reduction, Erl")},G1800Cap,1))))'
+            ),
             "F CDR_N>=10": f'=IF({F("CDR_N_Avg")}>=pCDRnMin,1,0)',
             "F DL and UL>2": (
                 f'=IF(AND(ISNUMBER({F("DL Bad Qual(6~7), %")}),{F("DL Bad Qual(6~7), %")}>pBadQualMin,'
                 f'ISNUMBER({F("UL Bad Qual(6~7), %")}),{F("UL Bad Qual(6~7), %")}>pBadQualMin),1,0)'
             ),
-            "F Load>=70": f'=IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}>=pVoiceLoadHigh),1,0)',
-            "F HOSR<=90": f'=IF(AND(ISNUMBER({F("HOSR_Out, %")}),{F("HOSR_Out, %")}<=pHOSRMax),1,0)',
-            "F CDR and ICM": (
-                f'=IF(AND(ISNUMBER({F("CDR, %")}),{F("CDR, %")}>pCDRMin,'
-                f'ISNUMBER({F("ICM_B4~5, %")}),{F("ICM_B4~5, %")}>pICMMin),1,0)'
+            "F High ICM": f'=IF(AND(ISNUMBER({F("ICM_B4~5, %")}),{F("ICM_B4~5, %")}>pICMMin),1,0)',
+            "G1800 TRX for CDR": f'=IF(AND({F("Band")}="G900",{F("F CDR_N>=10")}=1),1,0)',
+            "G1800 TRX for quality": f'=IF(AND({F("Band")}="G900",{F("F DL and UL>2")}=1),1,0)',
+            "G1800 TRX for ICM": (
+                f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F Load after>=80")}<>1,'
+                f'{F("F CDR_N>=10")}<>1,{F("F DL and UL>2")}<>1,{F("F High ICM")}=1),1,0)'
             ),
-            "G900 TRX Reduction": (
-                f'=IF(AND({F("Band")}="G900",{F("F TRX>2")}=1,{F("F Cong<1")}=1,'
-                f'OR({F("F Load<=60")}=1,{F("F CDR_N>=10")}=1,{F("F DL and UL>2")}=1)),"Yes","No")'
+            "G900 removed for CDR": f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F CDR_N>=10")}=1,{F("TRX Configured")}>=3),1,0)',
+            "G900 removed for quality": (
+                f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F DL and UL>2")}=1,'
+                f'{F("TRX Configured")}-{F("G900 removed for CDR")}>=3),1,0)'
             ),
-            "TRX Keep": f'=IF({F("G900 TRX Reduction")}="Yes",pTRXKeep,{F("TRX Configured")})',
-            "TRX Remove": f'=IF({F("G900 TRX Reduction")}="Yes",MAX(0,{F("TRX Configured")}-pTRXKeep),0)',
-            "Voice Load after 2 TRX, %": (
-                f'=IF(AND({F("G900 TRX Reduction")}="Yes",pTRXKeep>0,ISNUMBER({F("Voice Load, %")})),'
-                f'{F("Voice Load, %")}*{F("TRX Configured")}/pTRXKeep,"")'
+            "G900 removed for ICM": (
+                f'=IF(AND({F("G1800 TRX for ICM")}=1,{F("TRX Configured")}-{F("G900 removed for CDR")}-{F("G900 removed for quality")}>=3),1,0)'
             ),
+            "G900 TRX final": (
+                f'=IF({F("G900 TRX Reduction")}="Yes",MIN(pTRXKeep,{F("TRX Configured")}),'
+                f'MAX(0,{F("TRX Configured")}-{F("G900 removed for CDR")}-{F("G900 removed for quality")}-{F("G900 removed for ICM")}))'
+            ),
+            "TRX Remove": f'=MAX(0,{F("TRX Configured")}-{F("G900 TRX final")})',
+            "G1800 TRX Add": f'={F("G1800 TRX for load")}+{F("G1800 TRX for CDR")}+{F("G1800 TRX for quality")}+{F("G1800 TRX for ICM")}',
+            "G1800 Addition": f'=IF(AND({F("Band")}="G900",{F("G1800 TRX Add")}>0),"Yes","No")',
+            "TCH final": f'=IF({F("TRX Configured")}=0,0,{F("Available TCHs_K3015_Avg")}*{F("G900 TRX final")}/{F("TRX Configured")})',
+            "Capacity final, Erl": (
+                "=" + erlang_lookup(f'{F("TCH final")}*(1+pHR)')
+                + f'+IF({F("G1800 TRX Add")}=0,0,INDEX(G1800Cap,{F("G1800 TRX Add")}+1))'
+            ),
+            "Voice Load final, %": f'=IF({F("Capacity final, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity final, Erl")}*100)',
             "Reduction Reason": (
-                f'=IF({F("G900 TRX Reduction")}<>"Yes","",MID('
-                f'IF({F("F Load<=60")}=1,", Voice load<="&pVoiceLoadMax&"%","")'
-                f'&IF({F("F CDR_N>=10")}=1,", CDR_N>="&pCDRnMin,"")'
-                f'&IF({F("F DL and UL>2")}=1,", DL and UL bad quality>"&pBadQualMin&"%","")'
-                f',3,300))'
-            ),
-            "G1800 Cell Addition": (
-                f'=IF(AND({F("Band")}="G900",{F("TRX Configured")}>=pAddTRXMin,OR('
-                f'{F("F Load>=70")}=1,{F("F HOSR<=90")}=1,{F("F DL and UL>2")}=1,'
-                f'{F("F CDR_N>=10")}=1,{F("F CDR and ICM")}=1)),"Yes","No")'
-            ),
-            "Voice Load Band": (
-                f'=IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}>=pVoiceLoadHigh),"High >=70%",'
-                f'IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}<pVoiceLoadHigh),"Low <70%",""))'
+                f'=IF({F("G900 TRX Reduction")}<>"Yes","",'
+                f'"TRX>"&pTRXAbove&", TCH cong<"&pTCHCongMax&"%, SDCCH cong<"&pSDCCHCongMax&"%, voice load<="&pVoiceLoadMax&"%, TCH availability>"&pTCHAvailMin&"%")'
             ),
             "Addition Reason": (
-                f'=IF({F("G1800 Cell Addition")}<>"Yes","",MID('
-                f'IF({F("F Load>=70")}=1,", Voice load>="&pVoiceLoadHigh&"%","")'
-                f'&IF({F("F HOSR<=90")}=1,", HOSR_Out<="&pHOSRMax&"%","")'
-                f'&IF({F("F DL and UL>2")}=1,", DL and UL bad quality>"&pBadQualMin&"%","")'
-                f'&IF({F("F CDR_N>=10")}=1,", CDR_N>="&pCDRnMin,"")'
-                f'&IF({F("F CDR and ICM")}=1,", CDR>"&pCDRMin&"% and ICM_B4~5>"&pICMMin&"%","")'
-                f',3,400))'
+                f'=IF({F("G1800 TRX Add")}=0,"",MID('
+                f'IF({F("G1800 TRX for load")}>0,"; Voice load after G900 step "&TEXT({F("Voice Load after reduction, %")},"0.0")&"% >= "&pVoiceLoadHigh&"%, add "&{F("G1800 TRX for load")}&" G1800 TRX toward <"&pVoiceLoadTarget&"%","")'
+                f'&IF({F("G1800 TRX for CDR")}>0,"; Daily CDR_N>="&pCDRnMin&", add 1 G1800 TRX","")'
+                f'&IF({F("G1800 TRX for quality")}>0,"; DL and UL bad quality>"&pBadQualMin&"%, add 1 G1800 TRX","")'
+                f'&IF({F("G1800 TRX for ICM")}>0,"; ICM band 4-5>"&pICMMin&"% and no other trigger, add 1 G1800 TRX","")'
+                f'&IF(AND({F("TRX Remove")}>0,{F("G900 TRX Reduction")}<>"Yes"),"; G900 TRX reduced by "&{F("TRX Remove")}&" because TRX stayed at or above 3","")'
+                f'&IF(AND({F("G1800 TRX Add")}>0,{F("G900 TRX Reduction")}="Yes"),"; G900 already reduced to the keep value, so it is not reduced further","")'
+                f',3,500))'
             ),
             "Action": (
-                f'=IF(AND({F("G900 TRX Reduction")}="Yes",{F("G1800 Cell Addition")}="Yes"),'
-                f'"Reduce G900 TRX and add G1800 cell",'
-                f'IF({F("G900 TRX Reduction")}="Yes","Reduce G900 TRX",'
-                f'IF({F("G1800 Cell Addition")}="Yes","Add G1800 cell","No action")))'
+                f'=IF(AND({F("G900 TRX Reduction")}="Yes",{F("G1800 TRX Add")}>0),"Reduce G900 to "&{F("G900 TRX final")}&" TRX and add "&{F("G1800 TRX Add")}&" G1800 TRX",'
+                f'IF({F("G900 TRX Reduction")}="Yes","Reduce G900 to "&{F("G900 TRX final")}&" TRX",'
+                f'IF(AND({F("G1800 TRX Add")}>0,{F("TRX Remove")}>0),"Add "&{F("G1800 TRX Add")}&" G1800 TRX and remove "&{F("TRX Remove")}&" G900 TRX",'
+                f'IF({F("G1800 TRX Add")}>0,"Add "&{F("G1800 TRX Add")}&" G1800 TRX","No action"))))'
             ),
             "Review": (
                 f'=MID('
                 f'IF({F("Band")}="G1800","; G1800 cell already on air","")'
                 f'&IF({F("Band")}="Both","; Cell already has 900 and 1800 TCH","")'
                 f'&IF({F("Band")}="NoTCH","; No 900 or 1800 TCH samples in the busy hour","")'
-                f'&IF(AND({F("G900 TRX Reduction")}="Yes",ISNUMBER({F("Voice Load after 2 TRX, %")}),{F("Voice Load after 2 TRX, %")}>100),'
-                f'"; Projected BH voice load exceeds 100% after cutting to "&pTRXKeep&" TRX","")'
-                f'&IF(AND({F("G900 TRX Reduction")}="Yes",ISNUMBER({F("Voice Load after 2 TRX, %")}),'
-                f'{F("Voice Load after 2 TRX, %")}>pVoiceLoadMax,{F("Voice Load after 2 TRX, %")}<=100),'
-                f'"; Projected BH voice load exceeds "&pVoiceLoadMax&"% after cutting to "&pTRXKeep&" TRX","")'
-                f'&IF({F("BH Days")}<pDailyDays,"; BH sample is shorter than 7 days","")'
-                f'&IF({F("Daily Days")}<pDailyDays,"; Daily sample is shorter than 7 days","")'
-                f',3,400)'
+                f'&IF({F("Daily Days")}=0,"; No matching daily row","")'
+                f'&IF(AND({F("G1800 TRX for load")}>0,ISNUMBER({F("Voice Load final, %")}),{F("Voice Load final, %")}>=pVoiceLoadTarget),"; Voice load stays at or above "&pVoiceLoadTarget&"% after the G1800 TRX on this row","")'
+                f'&IF({F("BH Days")}<pDailyDays,"; BH sample is shorter than "&pDailyDays&" days","")'
+                f'&IF(AND({F("Daily Days")}>0,{F("Daily Days")}<pDailyDays),"; Daily sample is shorter than "&pDailyDays&" days","")'
+                f',3,500)'
             ),
         }
-
+        cache = {
+            "Half Rate Traffic Ratio": item["half_rate"],
+            "Equivalent channels": item["equivalent"],
+            "Capacity, Erl": item["capacity"],
+            "Voice Load, %": blank(item["voice"]),
+            "TCH Cong, %": item["tch_cong"],
+            "SDCCH Cong, %": item["sdcch_cong"],
+            "DL Bad Qual(6~7), %": blank(item["dl"]),
+            "UL Bad Qual(6~7), %": blank(item["ul"]),
+            "CDR, %": blank(item["cdr"]),
+            "HOSR_Out, %": blank(item["hosr"]),
+            "ICM_B4~5, %": blank(item["icm"]),
+            "Incoming HOSR, %": blank(item["ihosr"]),
+            "CSSR, %": blank(item["cssr"]),
+            "Daily avg TCH, Erl": blank(item["daily_tch"]),
+            "Daily avg TCHH, Erl": (daily.get("k3034", 0.0) or 0.0) * TRAFFIC_HOURS,
+            "Daily avg SDCCH, Erl": (daily.get("k3004", 0.0) or 0.0) * TRAFFIC_HOURS,
+            "F TRX>2": 1 if item["trx"] > defaults()["pTRXAbove"] else 0,
+            "F TCH Cong<1": 1 if item["tch_cong"] < defaults()["pTCHCongMax"] else 0,
+            "F SDCCH Cong<0.5": 1 if item["sdcch_cong"] < defaults()["pSDCCHCongMax"] else 0,
+            "F Load<=40": 1 if item["voice"] is not None and item["voice"] <= defaults()["pVoiceLoadMax"] else 0,
+            "F Avail>99": 1 if item["rr307"] > defaults()["pTCHAvailMin"] else 0,
+            "G900 TRX Reduction": "Yes" if plan["reduce"] else "No",
+            "TRX after reduction": plan["trx_after"],
+            "TCH after reduction": tch_for_trx(item["avail"], item["trx"], plan["trx_after"]),
+            "Capacity after reduction, Erl": plan["cap_after"],
+            "Voice Load after reduction, %": blank(plan["voice_after"]),
+            "F Load after>=80": 1 if plan["load_high"] else 0,
+            "G1800 TRX for load": plan["n_load"],
+            "F CDR_N>=10": 1 if plan["cdr_hit"] else 0,
+            "F DL and UL>2": 1 if plan["qual_hit"] else 0,
+            "F High ICM": 1 if plan["icm_hit"] else 0,
+            "G1800 TRX for CDR": plan["n_cdr"],
+            "G1800 TRX for quality": plan["n_qual"],
+            "G1800 TRX for ICM": plan["n_icm"],
+            "G900 removed for CDR": plan["removed_cdr"],
+            "G900 removed for quality": plan["removed_qual"],
+            "G900 removed for ICM": plan["removed_icm"],
+            "G900 TRX final": plan["trx_final"],
+            "TRX Remove": plan["trx_remove"],
+            "G1800 TRX Add": plan["n_add"],
+            "G1800 Addition": "Yes" if plan["n_add"] else "No",
+            "TCH final": tch_for_trx(item["avail"], item["trx"], plan["trx_final"]),
+            "Capacity final, Erl": plan["cap_final"],
+            "Voice Load final, %": blank(plan["voice_final"]),
+            "Reduction Reason": item["reason_r"],
+            "Addition Reason": item["reason_a"],
+            "Action": item["action"],
+            "Review": item["notes"],
+        }
         values = {
             "Source": item["source"],
             "GBSC": item["gbsc"],
@@ -740,6 +1074,7 @@ def build(records):
             "TCH Congestion_D_Avg": item["tchd_avg"],
             "Failed SDCCH Seizures due to Busy SDCCH_K3001_Avg": item["sdn_avg"],
             "SDCCH Seizure Requests_K3000_Avg": item["sdd_avg"],
+            "TCH Availability_RR307_Avg": item["rr307"],
             "CDR_N_Avg": daily.get("cdrn", 0.0),
             "CDR_D_Avg": daily.get("cdrd", 0.0),
             "HOSR_N_Avg": daily.get("hosrn", 0.0),
@@ -767,7 +1102,7 @@ def build(records):
         for pos, (name, kind, _width) in enumerate(columns):
             fmt = value_formats[kind]
             if name in formulas:
-                all_cells.write_formula(row - 1, pos, formulas[name], fmt)
+                all_cells.write_formula(row - 1, pos, formulas[name], fmt, cache[name])
             else:
                 value = values[name]
                 if isinstance(value, str):
@@ -776,7 +1111,7 @@ def build(records):
                     all_cells.write_number(row - 1, pos, value, fmt)
 
     reduce_col = letter["G900 TRX Reduction"]
-    add_col = letter["G1800 Cell Addition"]
+    add_col = letter["G1800 Addition"]
     all_cells.conditional_format(1, 0, len(records), len(columns) - 1, {
         "type": "formula",
         "criteria": f'=${reduce_col}2="Yes"',
@@ -808,119 +1143,87 @@ def build(records):
     reductions = [item for item in records if item["reduce"]]
     additions = [item for item in records if item["add"]]
     reductions.sort(key=lambda item: (item["gbsc"], -item["trx"], item["name"]))
-    additions.sort(key=lambda item: (item["gbsc"], -(item["voice"] or -1), item["name"]))
+    additions.sort(key=lambda item: (item["gbsc"], -item["plan"]["n_add"], -(item["voice"] or -1), item["name"]))
 
     reduction_headers = [
-        ("Source", 10, cell_center),
-        ("GBSC", 12, cell_text),
-        ("Cell CI", 12, cell_text),
-        ("Cell Name", 16, cell_text),
-        ("BH Days", 11, cell_int),
-        ("TRX now", 11, cell_int),
-        ("TRX keep", 11, cell_int),
-        ("TRX remove", 12, cell_int),
-        ("Traffic Volume on TCH_K3014_Avg", 14, cell_num),
-        ("Half Rate Traffic Ratio", 16, cell_ratio),
-        ("Available TCHs_K3015_Avg", 14, cell_num),
-        ("Capacity, Erl", 14, cell_num),
-        ("Voice Load, %", 14, cell_num),
-        ("Voice Load after 2 TRX, %", 18, cell_num),
-        ("TCH Cong, %", 13, cell_num),
-        ("SDCCH Cong, %", 14, cell_num),
-        ("CDR_N_Avg", 14, cell_num),
-        ("DL Bad Qual(6~7), %", 16, cell_num),
-        ("UL Bad Qual(6~7), %", 16, cell_num),
-        ("CDR, %", 12, cell_num),
-        ("HOSR_Out, %", 13, cell_num),
-        ("Projected load check", 22, cell_center),
-        ("Reduction Reason", 42, wrap),
-        ("Review", 46, wrap),
+        ("Source", 10, cell_center), ("GBSC", 12, cell_text), ("Cell CI", 12, cell_text),
+        ("Cell Name", 16, cell_text), ("TRX now", 11, cell_int), ("TRX keep", 11, cell_int),
+        ("TRX remove", 12, cell_int), ("Traffic Volume on TCH_K3014_Avg", 16, cell_num),
+        ("Equivalent channels", 16, cell_num), ("Capacity, Erl", 14, cell_num),
+        ("Voice Load, %", 14, cell_num), ("TCH after reduction", 16, cell_num),
+        ("Capacity after reduction, Erl", 18, cell_num), ("Voice Load after reduction, %", 18, cell_num),
+        ("TCH Cong, %", 12, cell_num), ("SDCCH Cong, %", 13, cell_num),
+        ("TCH Availability_RR307_Avg", 18, cell_num), ("G1800 TRX Add", 14, cell_int),
+        ("Voice Load final, %", 16, cell_num), ("Reduction Reason", 46, wrap), ("Review", 42, wrap),
     ]
     reduction_rows = []
     for item in reductions:
-        if item["load_after"] is None:
-            check = ""
-        elif item["load_after"] > 100:
-            check = "Above 100%"
-        elif item["load_after"] > 60:
-            check = "Above 60%"
-        else:
-            check = "Within 60%"
+        plan = item["plan"]
         reduction_rows.append([
-            item["source"], item["gbsc"], item["ci"], item["name"], item["days"],
-            item["trx"], 2, item["trx"] - 2, item["carried"], item["half_rate"],
-            item["avail"], item["capacity"], blank(item["voice"]), blank(item["load_after"]),
-            item["tch_cong"], item["sdcch_cong"], blank(item["cdr_n"]),
-            blank(item["dl"]), blank(item["ul"]), blank(item["cdr"]), blank(item["hosr"]),
-            check, item["reason_r"], item["notes"],
+            item["source"], item["gbsc"], item["ci"], item["name"], item["trx"], plan["trx_final"],
+            plan["trx_remove"], item["carried"], item["equivalent"], item["capacity"], blank(item["voice"]),
+            tch_for_trx(item["avail"], item["trx"], plan["trx_after"]), plan["cap_after"], blank(plan["voice_after"]),
+            item["tch_cong"], item["sdcch_cong"], item["rr307"], plan["n_add"], blank(plan["voice_final"]),
+            item["reason_r"], item["notes"],
         ])
     reduction_sheet = workbook.add_worksheet("G900 TRX Reduction")
     reduction_sheet.set_tab_color(orange)
     write_table(reduction_sheet, reduction_headers, reduction_rows, header_orange)
-    if reduction_rows:
-        reduction_sheet.conditional_format(1, 13, len(reduction_rows), 13, {
-            "type": "cell", "criteria": ">", "value": 60,
+
+    addition_headers = [
+        ("Source", 10, cell_center), ("GBSC", 12, cell_text), ("Cell CI", 12, cell_text),
+        ("Cell Name", 16, cell_text), ("TRX now", 11, cell_int), ("G900 TRX final", 14, cell_int),
+        ("G900 removed", 13, cell_int), ("Voice Load, %", 14, cell_num),
+        ("Voice Load after reduction, %", 18, cell_num), ("G1800 for load", 14, cell_int),
+        ("G1800 for CDR", 14, cell_int), ("G1800 for quality", 16, cell_int),
+        ("G1800 for ICM", 14, cell_int), ("G1800 TRX Add", 14, cell_int),
+        ("Capacity final, Erl", 16, cell_num), ("Voice Load final, %", 16, cell_num),
+        ("CDR_N_Avg", 12, cell_num), ("DL Bad Qual(6~7), %", 16, cell_num),
+        ("UL Bad Qual(6~7), %", 16, cell_num), ("ICM_B4~5, %", 13, cell_num),
+        ("Full G900 reduction", 16, cell_center), ("Addition Reason", 55, wrap), ("Review", 42, wrap),
+    ]
+    addition_rows = []
+    for item in additions:
+        plan = item["plan"]
+        addition_rows.append([
+            item["source"], item["gbsc"], item["ci"], item["name"], item["trx"], plan["trx_final"],
+            plan["trx_remove"], blank(item["voice"]), blank(plan["voice_after"]), plan["n_load"],
+            plan["n_cdr"], plan["n_qual"], plan["n_icm"], plan["n_add"], plan["cap_final"],
+            blank(plan["voice_final"]), blank(item["cdr_n"]), blank(item["dl"]), blank(item["ul"]),
+            blank(item["icm"]), "Yes" if plan["reduce"] else "No", item["reason_a"], item["notes"],
+        ])
+    addition_sheet = workbook.add_worksheet("G1800 Addition")
+    addition_sheet.set_tab_color(blue)
+    write_table(addition_sheet, addition_headers, addition_rows, header_blue)
+    if addition_rows:
+        addition_sheet.conditional_format(1, 15, len(addition_rows), 15, {
+            "type": "cell", "criteria": ">=", "value": 60,
             "format": workbook.add_format({
                 "bg_color": pale_red, "font_name": "Calibri", "font_size": 10,
                 "border": 1, "num_format": "#,##0.00", "align": "center",
             }),
         })
 
-    addition_headers = [
-        ("Source", 10, cell_center),
-        ("GBSC", 12, cell_text),
-        ("Cell CI", 12, cell_text),
-        ("Cell Name", 16, cell_text),
-        ("BH Days", 11, cell_int),
-        ("TRX now", 11, cell_int),
-        ("Voice Load Band", 16, cell_center),
-        ("Traffic Volume on TCH_K3014_Avg", 14, cell_num),
-        ("Voice Load, %", 14, cell_num),
-        ("HOSR_Out, %", 13, cell_num),
-        ("DL Bad Qual(6~7), %", 16, cell_num),
-        ("UL Bad Qual(6~7), %", 16, cell_num),
-        ("CDR_N_Avg", 14, cell_num),
-        ("CDR, %", 12, cell_num),
-        ("ICM_B4~5, %", 13, cell_num),
-        ("TCH Cong, %", 13, cell_num),
-        ("SDCCH Cong, %", 14, cell_num),
-        ("Also reduce G900 TRX", 18, cell_center),
-        ("Addition Reason", 55, wrap),
-    ]
-    addition_rows = []
-    for item in additions:
-        addition_rows.append([
-            item["source"], item["gbsc"], item["ci"], item["name"], item["days"], item["trx"],
-            item["load_band"], item["carried"], blank(item["voice"]), blank(item["hosr"]),
-            blank(item["dl"]), blank(item["ul"]), blank(item["cdr_n"]), blank(item["cdr"]),
-            blank(item["icm"]), item["tch_cong"], item["sdcch_cong"],
-            "Yes" if item["reduce"] else "No", item["reason_a"],
-        ])
-    addition_sheet = workbook.add_worksheet("G1800 Addition")
-    addition_sheet.set_tab_color(blue)
-    write_table(addition_sheet, addition_headers, addition_rows, header_blue)
-
-    # Summary counts are formulas on All Cells, so a threshold edit updates them.
     summary = workbook.add_worksheet("Summary")
     summary.set_tab_color(navy)
     summary.set_column("A:A", 3)
     summary.set_column("B:B", 78)
     summary.set_column("C:C", 16)
     summary.set_column("D:D", 18)
-    summary.set_column("E:E", 22)
-    summary.set_column("F:L", 16)
+    summary.set_column("E:E", 24)
+    summary.set_column("F:I", 16)
     summary.hide_gridlines(2)
     summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
-    summary.write("B2", f"{VERSION}. G900 TRX reduction and G1800 cell addition. Busy hour 26 Oct 2026 to 1 Nov 2026.", section_fmt)
+    summary.write("B2", f"{VERSION}. G900 TRX reduction to 2 TRX, and G1800 TRX sized from the 5% Erlang B table at 60% half rate.", section_fmt)
     summary.write(
         "B3",
-        "Voice load, available TCH, half-rate ratio, TCH congestion, and SDCCH congestion come from the busy-hour files. "
-        "CDR_N, HOSR, DL and UL bad quality, ICM band 4-5, incoming HOSR, and CSSR come from the daily files. "
-        "Every KPI is the average of the dates available for that cell. Busy-hour Erlang is already one hour, so voice load uses that average with no x24. Daily Erlang is an hourly average, so daily traffic is multiplied by 24 and is not used in voice load.",
+        "Capacity Erlang is the 5% Erlang B offered traffic of available TCH x 1.60. "
+        "The measured half-rate ratio is still on the sheet and is not used in that capacity. "
+        "Voice load is busy-hour K3014 divided by that capacity. Busy-hour Erlang is not multiplied by 24. "
+        "Daily traffic is still the hourly average multiplied by 24 and is not used in voice load.",
         note_fmt,
     )
     summary.set_row(2, 48)
-
     data_first = 2
     data_last = last
     sheet = "'All Cells'"
@@ -944,25 +1247,24 @@ def build(records):
     reduction_formulas = [
         ("G900 cells", countifs(("Band", '"G900"'))),
         ("G900 cells with more than 2 TRX", countifs(("Band", '"G900"'), ("F TRX>2", "1"))),
-        ("Of those, SDCCH and TCH congestion both under 1%", countifs(("Band", '"G900"'), ("F TRX>2", "1"), ("F Cong<1", "1"))),
-        ("Cells reduced to 2 TRX", countifs(("G900 TRX Reduction", '"Yes"'))),
-        ("G900 TRX removed", sumifs("TRX Remove", ("G900 TRX Reduction", '"Yes"'))),
-        ("Reduced cells that also get a G1800 cell", countifs(("G900 TRX Reduction", '"Yes"'), ("G1800 Cell Addition", '"Yes"'))),
+        ("Reduced to 2 TRX, all five gates", countifs(("G900 TRX Reduction", '"Yes"'))),
+        ("TRX removed by that reduction", sumifs("TRX Remove", ("G900 TRX Reduction", '"Yes"'))),
+        ("Of those, voice load after the cut is at least 80%", countifs(("G900 TRX Reduction", '"Yes"'), ("F Load after>=80", "1"))),
     ]
     for index, (label, formula) in enumerate(reduction_formulas):
         summary.write(5 + index, 1, label, kpi_label_o)
         summary.write_formula(5 + index, 2, formula, kpi_orange)
 
-    summary.merge_range("E5:F5", "G1800 cell addition", header_blue)
-    summary.write("G5", "Cells", header_blue)
+    summary.merge_range("E5:F5", "G1800 TRX addition", header_blue)
+    summary.write("G5", "Cells / TRX", header_blue)
     addition_formulas = [
-        ("G900 cells proposed for a new G1800 cell", countifs(("G1800 Cell Addition", '"Yes"'))),
-        ("Triggered by voice load >= 70%", countifs(("G1800 Cell Addition", '"Yes"'), ("F Load>=70", "1"))),
-        ("Triggered by HOSR_Out <= 90%", countifs(("G1800 Cell Addition", '"Yes"'), ("F HOSR<=90", "1"))),
-        ("Triggered by DL and UL bad quality > 2%", countifs(("G1800 Cell Addition", '"Yes"'), ("F DL and UL>2", "1"))),
-        ("Triggered by daily-average CDR_N >= 10", countifs(("G1800 Cell Addition", '"Yes"'), ("F CDR_N>=10", "1"))),
-        ("Triggered by CDR > 0.2% and ICM band 4-5 > 50%", countifs(("G1800 Cell Addition", '"Yes"'), ("F CDR and ICM", "1"))),
-        ("High-load band, voice load >= 70%", countifs(("G1800 Cell Addition", '"Yes"'), ("Voice Load Band", '"High >=70%"'))),
+        ("G900 cells that receive G1800 TRX", countifs(("G1800 Addition", '"Yes"'))),
+        ("G1800 TRX to add", f"=SUM({sheet}!{letter['G1800 TRX Add']}${data_first}:{letter['G1800 TRX Add']}${data_last})"),
+        ("Cells sized because voice load after the G900 step is at least 80%", countifs(("G1800 TRX for load", '">=1"'))),
+        ("Cells with daily CDR_N at least 10", countifs(("G1800 TRX for CDR", "1"))),
+        ("Cells with DL and UL bad quality above 2%", countifs(("G1800 TRX for quality", "1"))),
+        ("Cells with high ICM only", countifs(("G1800 TRX for ICM", "1"))),
+        ("Extra G900 TRX removed outside the full reduction", sumifs("TRX Remove", ("G900 TRX Reduction", '"No"'))),
     ]
     for index, (label, formula) in enumerate(addition_formulas):
         summary.merge_range(5 + index, 4, 5 + index, 5, label, kpi_label_b)
@@ -984,8 +1286,7 @@ def build(records):
 
     bsc_header_row = 21
     bsc_headers = [
-        "GBSC", "Cells", "G900", "G1800 already", "Both",
-        "Cells reduced", "TRX removed", "G1800 cells to add", "Both actions",
+        "GBSC", "Cells", "G900", "Reduced to 2", "TRX removed", "G1800 cells", "G1800 TRX", "Both actions",
     ]
     for col, text in enumerate(bsc_headers):
         summary.write(bsc_header_row, 1 + col, text, header)
@@ -995,12 +1296,11 @@ def build(records):
         bsc_formulas = [
             countifs(("GBSC", f'"{gbsc}"')),
             countifs(("GBSC", f'"{gbsc}"'), ("Band", '"G900"')),
-            countifs(("GBSC", f'"{gbsc}"'), ("Band", '"G1800"')),
-            countifs(("GBSC", f'"{gbsc}"'), ("Band", '"Both"')),
             countifs(("GBSC", f'"{gbsc}"'), ("G900 TRX Reduction", '"Yes"')),
-            sumifs("TRX Remove", ("GBSC", f'"{gbsc}"'), ("G900 TRX Reduction", '"Yes"')),
-            countifs(("GBSC", f'"{gbsc}"'), ("G1800 Cell Addition", '"Yes"')),
-            countifs(("GBSC", f'"{gbsc}"'), ("G900 TRX Reduction", '"Yes"'), ("G1800 Cell Addition", '"Yes"')),
+            sumifs("TRX Remove", ("GBSC", f'"{gbsc}"')),
+            countifs(("GBSC", f'"{gbsc}"'), ("G1800 Addition", '"Yes"')),
+            sumifs("G1800 TRX Add", ("GBSC", f'"{gbsc}"')),
+            countifs(("GBSC", f'"{gbsc}"'), ("G900 TRX Reduction", '"Yes"'), ("G1800 Addition", '"Yes"')),
         ]
         for col, formula in enumerate(bsc_formulas, start=1):
             summary.write_formula(row, 1 + col, formula, cell_int)
@@ -1015,30 +1315,30 @@ def build(records):
     note_row = total_row + 2
     summary.write(note_row, 1, "How to read the result", section_fmt)
     notes = [
-        "G900 TRX Reduction is the list of G900 cells that go down to 2 TRX. TRX removed is configured TRX minus 2. A red voice-load-after-cut value is the busy-hour load if the remaining 2 TRX carry today's traffic and available TCH scales with the TRX count.",
-        "G1800 Addition is the list of G900 cells proposed for a new DCS1800 cell. A cell that already has 1800 TCH is not on this list. The voice-load band says whether the cell is at or above 70% or below 70%. Voice load below 70% does not by itself add a cell.",
-        "All Cells has one row per cell. Gray columns are the date averages, named with the file counter and _avg. The KPI column immediately after that pair is the calculation. Traffic Volume on TCH_K3014_Avg is the one-hour busy-hour carried TCH used in voice load. Daily avg TCH multiplies Daily Traffic Volume on TCH_K3014_Avg by 24 and is not used in voice load.",
-        "Parameters holds the thresholds. Changing a yellow cell recalculates All Cells and the counts on this Summary. Filter All Cells on G900 TRX Reduction or G1800 Cell Addition after a threshold change. The two action sheets stay at the thresholds saved with this file.",
-        "Rules records the file split, the formulas, and the reading of each OR gate.",
+        "G900 TRX Reduction lists every G900 cell that meets all five gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Erlang B table, with available TCH scaled by 2 / configured TRX.",
+        "G1800 Addition lists every G900 cell that receives one or more DCS1800 TRX. G1800 for load is the count that takes the pooled voice load under 60%. CDR and bad quality each add one more TRX. High ICM adds one only when nothing else triggered.",
+        "A red voice-load-final cell is still at or above 60% after the TRX on that row. Capacity final is the remaining G900 Erlang plus the new G1800 Erlang.",
+        "All Cells holds the live formulas. Gray columns are date averages. Equivalent channels and Capacity, Erl read the Erlang B 5% sheet. Thresholds are on Parameters.",
+        "The two action sheets stay at the thresholds saved with this file. Changing a yellow parameter recalculates All Cells and this Summary.",
     ]
     for index, text in enumerate(notes):
         summary.merge_range(note_row + 1 + index, 1, note_row + 1 + index, 8, text, text_fmt)
         summary.set_row(note_row + 1 + index, 36)
 
     chart = workbook.add_chart({"type": "column"})
-    chart.set_title({"name": "G900 TRX removed and G1800 cells to add"})
-    chart.set_y_axis({"name": "Count"})
+    chart.set_title({"name": "G900 TRX removed and G1800 TRX to add"})
+    chart.set_y_axis({"name": "TRX"})
     chart.set_size({"width": 720, "height": 320})
     chart.add_series({
         "name": "TRX removed",
         "categories": ["Summary", first_bsc - 1, 1, last_bsc - 1, 1],
-        "values": ["Summary", first_bsc - 1, 7, last_bsc - 1, 7],
+        "values": ["Summary", first_bsc - 1, 5, last_bsc - 1, 5],
         "fill": {"color": orange},
     })
     chart.add_series({
-        "name": "G1800 cells to add",
+        "name": "G1800 TRX",
         "categories": ["Summary", first_bsc - 1, 1, last_bsc - 1, 1],
-        "values": ["Summary", first_bsc - 1, 8, last_bsc - 1, 8],
+        "values": ["Summary", first_bsc - 1, 7, last_bsc - 1, 7],
         "fill": {"color": blue},
     })
     chart.set_legend({"position": "bottom"})
@@ -1047,72 +1347,44 @@ def build(records):
     rules = workbook.add_worksheet("Rules")
     rules.set_tab_color("#548235")
     rules.set_column("A:A", 3)
-    rules.set_column("B:B", 128)
+    rules.set_column("B:B", 140)
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Each change is saved under a new version name. Earlier version files are kept.",
-        "v1: first workbook from the 7-day files. Busy-hour and daily traffic were both multiplied by 24.",
-        "v2: each KPI formula sits in the column immediately after its result. Busy-hour traffic was still multiplied by 24.",
-        "v3: busy-hour Erlang is the one-hour value and is not multiplied by 24. Daily traffic remains the hourly average multiplied by 24. The formula columns from v2 are kept.",
-        "v4: the formula column beside each KPI is the formula text. v2 and v3 used FORMULATEXT, which this spreadsheet shows as #NAME?.",
-        "v5: those formula-text columns are removed. Each KPI block keeps the numerator average, the denominator average, and the KPI. The KPI cell still holds the calculation.",
-        "v6: every average column uses the file counter name with _avg. Example: K3014_avg, K3015_avg, TCH Congestion_N_avg, CDR_N_avg, DL Quality(6~7)_N_avg. Daily copies of the same counter are Daily_K3014_avg, Daily_K3034_avg, and Daily_K3004_avg.",
-        "v7: the average header is the counter description, then the counter, then Avg. Example: Traffic Volume on TCH_K3014_Avg, TCHH Traffic Volume_K3034_Avg, Available TCHs_K3015_Avg.",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Earlier version files are kept. v7 still uses available TCH x (1 + measured half-rate ratio).",
         "",
-        "Purpose",
-        "G900 TRX comes down on cells that can release TRX while SDCCH and TCH congestion stay under 1%. A G1800 cell is proposed on a G900 cell whose busy-hour load, handover, quality, drops, or interference meet the addition rule.",
-        "",
-        "Files",
-        "Busy-hour files: 2G Capacity File_V1_BH and 2G Capacity File_V2_BH. Daily files: 2G Capacity File_V1_Daily and 2G Capacity File_V2_Daily. Each file has one row per cell per day, 26 Oct 2026 through 1 Nov 2026. V1 is MYMH05, MYMH06, MYMH07, and SYLH04. V2 is TNGH12.",
-        "A cell is averaged over the dates that cell has. A cell with 7 dates uses 7. A cell with fewer dates uses only those dates. The average is not filled up to 7 and is not divided by 7 again.",
-        "The join key is source, GBSC, cell CI, and cell name.",
-        "",
-        "What comes from the busy hour",
-        "Voice load, carried TCH Erlang (K3014), half-rate TCH Erlang (K3034), available TCH (K3015), configured TRX (S3655), configured TCH (K3016), SDCCH Erlang (K3004), TCH congestion, and SDCCH congestion.",
-        "Each of those starts as the average of the cell's available busy-hour dates. A ratio uses average numerator over average denominator, which is the same as the sum over the sum. Busy-hour traffic Erlang (K3014, K3034, K3004) is already the one-hour value, so it is not multiplied by 24. Available TCH, configured TRX, and the congestion counters are not multiplied by 24 either.",
-        "TCH Cong, % = TCH Congestion_N / TCH Congestion_D x 100. No denominator is 0%.",
-        "SDCCH Cong, % = K3001 Failed SDCCH seizures due to busy SDCCH / K3000 SDCCH seizure requests x 100. The capacity file has no SDCCH congestion column, so this is the pair used for the under-1% gate. No denominator is 0%.",
-        "",
-        "What comes from the daily file",
-        "CDR_N, CDR %, HOSR_Out, DL bad quality, UL bad quality, ICM band 4-5, incoming HOSR, and CSSR. These are the rest of the KPIs. Each is averaged over the dates available for that cell.",
-        "CDR_N_Avg is that date average. It is the number compared with 10. It is not divided by 7 again.",
-        "A ratio is the average numerator over the average denominator. ICM_B4~5, % = Interference Band_4-5_Samples / Interference Band Samples_D x 100.",
-        "DL Bad Qual(6~7), % = DL Quality(6~7)_N / DL Quality_D x 100. The file names the denominator DL Quality_D. UL uses UL Quality(6~7)_N / UL Quality_D.",
-        "HOSR_Out, % = HOSR_N / HOSR_D x 100. CDR, % = CDR_N / CDR_D x 100.",
-        "Daily traffic is averaged across the cell's dates, then multiplied by 24. Daily avg TCH, Erl = daily K3014 average x 24. The same x24 is applied to daily K3034 and K3004. These daily traffic columns are reference only. Voice load does not use them.",
-        "Where a denominator is zero, voice load, bad quality, CDR, HOSR, ICM, incoming HOSR, and CSSR are blank, and a greater-than or less-than test on that KPI is not met.",
-        "",
-        "Voice load",
-        "Half Rate Traffic Ratio = TCHH Traffic Volume_K3034_Avg / Traffic Volume on TCH_K3014_Avg. Both are the busy-hour date average, with no x24. The ratio is 0 when Traffic Volume on TCH_K3014_Avg is 0.",
-        "Capacity, Erl = Available TCHs_K3015_Avg x (1 + Half Rate Traffic Ratio). Available TCHs_K3015_Avg is the busy-hour average of K3015: sum of K3015 across the cell's dates, divided by the number of those dates.",
-        "Voice Load, % = Traffic Volume on TCH_K3014_Avg / Capacity x 100. Traffic Volume on TCH_K3014_Avg is the busy-hour average of K3014. It is already one hour, so it is not multiplied by 24.",
-        "",
-        "Band",
-        "A cell is G900 when the 900 TCH counters (R3027A and R3028A) are above zero across the week and the 1800 counters (R3027B and R3028B) are zero. The reverse is G1800. Both means the cell already carries 900 and 1800 TCH. Those counters are busy-hour sample counters, used only to tell the band. Actions apply to G900 cells.",
+        "Capacity",
+        "Capacity, Erl is the Erlang B offered traffic at 5% blocking. The channel count is Available TCHs_K3015_Avg x (1 + 0.60). The 0.60 is pHR, the design half-rate ratio.",
+        "Half Rate Traffic Ratio is still K3034 / K3014 from the busy hour. It is not used in Capacity, Erl.",
+        "Voice Load, % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour and is not multiplied by 24.",
+        "The Erlang B 5% sheet is the lookup. A channel count between two rows is read on the straight line between those rows. G1800 TRX Capacity is the same table applied to a new DCS1800 cell.",
+        "10 channels at 5% carry 6.22 Erl. 16 channels, 10 TCH at 60% half rate, carry 11.54 Erl.",
         "",
         "G900 TRX reduction",
-        "All of these are required: the cell is G900, configured TRX is above 2, SDCCH congestion is below 1%, and TCH congestion is below 1%.",
-        "The OR gate is then any one of: busy-hour voice load <= 60%, daily-average CDR_N >= 10, or both DL and UL bad quality above 2%.",
-        "DL and UL bad quality above 2% means both directions. One direction above 2% does not meet that term. The two percentages are on the sheet.",
-        "Action: keep 2 TRX. TRX removed = configured TRX - 2. A cell at 2 TRX or below is not changed.",
-        "Voice load after the cut = current voice load x configured TRX / 2. This assumes available TCH scales with TRX count and the half-rate ratio stays as it is. It is a check beside the action. The action still keeps 2 TRX where the projected load goes above 60% or above 100%. Those rows are marked in Review and highlighted on the reduction sheet.",
+        "A G900 cell is reduced only when every gate is true: configured TRX is above 2, TCH congestion is below 1%, SDCCH congestion is below 0.5%, busy-hour voice load is at or below 40%, and busy-hour RR307 TCH availability is above 99%.",
+        "The cell then keeps 2 TRX. TRX removed = configured TRX - 2. pTRXKeep is the yellow cell for that keep value.",
+        "TCH after the cut = available TCH x TRX kept / TRX configured. Capacity after the cut is that TCH count times 1.60, read from the 5% Erlang B table. Voice load after the cut uses the same carried K3014.",
+        "TCH Availability_RR307_Avg is the busy-hour date average of RR307. The busy-hour value is 100% for most cells, and the cells at or below 99% fail this gate.",
         "",
-        "G1800 cell addition",
-        "The cell is G900. TRX count is not a filter. Trx<>=2 (All scenario) is read as every TRX count, including 1 TRX and more than 2 TRX. pAddTRXMin is 0 for that reading. Set it to 2 on Parameters if addition should start only at 2 TRX.",
-        "A new G1800 cell is proposed when any one of these is true: busy-hour voice load >= 70%, HOSR_Out <= 90%, both DL and UL bad quality above 2%, daily-average CDR_N >= 10, or CDR above 0.2% and ICM band 4-5 above 50%.",
-        "The low-load line (voice load < 70%) uses the same handover, quality, and drop tests. Voice load below 70% is the group label on Voice Load Band. It is not itself a reason to add a cell, because that comparison is true for almost every cell. A low-load cell is added only when HOSR, both-direction bad quality, CDR_N, or the CDR and ICM pair is true.",
-        "A high-load cell is added because voice load is at or above 70%, and also when any of those problem KPIs are true.",
-        "CDR > 0.2 is 0.2 percent. CDR and ICM is an AND pair, and that pair is one term in the OR.",
-        "A cell that already has 1800 TCH stays off the addition list.",
+        "G1800 TRX",
+        "The G1800 count is worked out after the reduction step. If the cell was not reduced, the voice load used here is the current voice load.",
+        "1. If that voice load is at least 80%, add the smallest number of G1800 TRX that takes pooled voice load under 60%. Pooled capacity is the remaining G900 Erlang plus the new G1800 Erlang. The G1800 TCH count is 8 x TRX - 1 BCCH - one SDCCH per two TRX, then x 1.60, then the 5% table. The load rule stops at 12 TRX.",
+        "2. If daily CDR_N_Avg is at least 10, add 1 G1800 TRX. If the cell was already reduced to 2, do not remove more G900. Otherwise remove 1 G900 TRX when at least 3 G900 TRX remain.",
+        "3. If DL bad quality is above 2% and UL bad quality is above 2%, add 1 G1800 TRX and apply the same G900 removal rule. A cell that already lost one TRX on the CDR line loses a second only when 3 or more TRX still remain.",
+        "4. High ICM means ICM band 4-5 above 50%. pICMMin holds that percent. This line runs only when the reduction, the 80% load line, CDR, and bad quality did not trigger. It adds 1 G1800 TRX, then removes 1 G900 TRX when at least 3 remain.",
+        "The four G1800 counts are added together. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX.",
+        "Actions apply to G900 cells. A cell that already has 1800 TCH is not given another G1800 plan by these rules.",
+        "",
+        "What did not change",
+        "Congestion, CDR, HOSR, bad quality, ICM, incoming HOSR, CSSR, and the daily x24 traffic columns use the same formulas as v7. Daily traffic is reference only.",
+        "CDR_N, bad quality, and ICM still come from the daily file. Voice load, available TCH, congestion, TRX, and RR307 come from the busy-hour file. Each cell is averaged over the dates that cell has.",
         "",
         "What this file does not do",
-        "It does not plan the L900 bandwidth change from 5 MHz to 10 MHz. It does not use the cell database, TRX parameter, co-MPT, or inventory files. It does not choose a G1800 ARFCN, the number of G1800 TRX, or the BCCH. The addition list says which G900 cell gets a G1800 cell.",
+        "It does not plan the L900 move from 5 MHz to 10 MHz. It does not choose a G1800 ARFCN or BCCH.",
     ]
     rules.write("B1", f"Rules applied in this workbook ({VERSION})", title_fmt)
     headings = {
-        "Version", "Purpose", "Files", "What comes from the busy hour", "What comes from the daily file",
-        "Voice load", "Band", "G900 TRX reduction", "G1800 cell addition", "What this file does not do",
+        "Version", "Capacity", "G900 TRX reduction", "G1800 TRX", "What did not change", "What this file does not do",
     }
     for index, line in enumerate(rule_lines):
         if line in headings:
@@ -1121,51 +1393,81 @@ def build(records):
             rules.write(1 + index, 1, "", text_fmt)
         else:
             rules.write(1 + index, 1, line, text_fmt)
-            rules.set_row(1 + index, 18 + 14 * (len(line) // 150))
+            rules.set_row(1 + index, 18 + 14 * (len(line) // 160))
 
-    order = ["Summary", "G900 TRX Reduction", "G1800 Addition", "All Cells", "Parameters", "Rules"]
-    workbook.worksheets_objs.sort(key=lambda sheet: order.index(sheet.name))
+    order = [
+        "Summary", "G900 TRX Reduction", "G1800 Addition", "All Cells",
+        "Erlang B 5%", "G1800 TRX Capacity", "Parameters", "Rules",
+    ]
+    workbook.worksheets_objs.sort(key=lambda item: order.index(item.name))
     workbook.close()
     return reductions, additions
 
 
 def main():
+    table = build_erlang_table()
+    cfg = defaults()
+    caps = g1800_caps(table, cfg["pHR"])
+    self_check(table, caps)
     ensure_csvs()
     bh_cells = load_bh()
     daily_cells = load_daily()
-    missing_daily = set(bh_cells) - set(daily_cells)
-    missing_bh = set(daily_cells) - set(bh_cells)
-    records = prepare(bh_cells, daily_cells)
-    reductions, additions = build(records)
-    dates = set()
+    records = prepare(bh_cells, daily_cells, table, caps, cfg)
+    failures = []
+    still_high = 0
     for item in records:
-        dates.update(item["dates"])
+        plan = item["plan"]
+        if plan["reduce"]:
+            ok = (
+                item["band"] == "G900"
+                and item["trx"] > cfg["pTRXAbove"]
+                and item["tch_cong"] < cfg["pTCHCongMax"]
+                and item["sdcch_cong"] < cfg["pSDCCHCongMax"]
+                and item["voice"] is not None
+                and item["voice"] <= cfg["pVoiceLoadMax"]
+                and item["rr307"] > cfg["pTCHAvailMin"]
+                and plan["trx_final"] == min(cfg["pTRXKeep"], item["trx"])
+            )
+            if not ok:
+                failures.append(("reduce", item["name"]))
+        if item["band"] != "G900" and (plan["n_add"] or plan["trx_remove"]):
+            failures.append(("band", item["name"]))
+        lone_load = (
+            plan["n_load"] and plan["n_load"] < cfg["pMaxG1800TRX"]
+            and plan["n_cdr"] == 0 and plan["n_qual"] == 0 and plan["n_icm"] == 0
+        )
+        if lone_load and (plan["voice_final"] is None or plan["voice_final"] >= cfg["pVoiceLoadTarget"] + 0.05):
+            failures.append(("load", item["name"], plan["voice_final"], plan["n_load"]))
+        if plan["n_load"] and plan["voice_final"] is not None and plan["voice_final"] >= cfg["pVoiceLoadTarget"]:
+            still_high += 1
+        if plan["removed_cdr"] + plan["removed_qual"] + plan["removed_icm"] != (0 if plan["reduce"] else plan["trx_remove"]):
+            failures.append(("remove", item["name"]))
+    if failures:
+        print(failures[:8])
+        raise SystemExit(f"{len(failures)} decision checks failed")
+    reductions, additions = build(records, table)
     print("workbook", OUT)
-    print("BH dates", sorted(dates))
-    print("cells", len(records), "daily", len(daily_cells), "bh only", len(missing_daily), "daily only", len(missing_bh))
-    print("reduce", len(reductions), "trx_remove", sum(item["trx"] - 2 for item in reductions))
-    print("add", len(additions), "both actions", sum(1 for item in records if item["reduce"] and item["add"]))
+    print("cells", len(records))
+    print("reduce", len(reductions), "trx_removed_by_reduction", sum(item["plan"]["trx_remove"] for item in reductions))
+    print("trx_removed_all", sum(item["plan"]["trx_remove"] for item in records))
+    print("g1800_cells", len(additions), "g1800_trx", sum(item["plan"]["n_add"] for item in records))
+    print(
+        "load_rule", sum(1 for item in records if item["plan"]["n_load"]),
+        "cdr_rule", sum(1 for item in records if item["plan"]["n_cdr"]),
+        "quality_rule", sum(1 for item in records if item["plan"]["n_qual"]),
+        "icm_only", sum(1 for item in records if item["plan"]["n_icm"]),
+        "still_at_or_above_60", still_high,
+    )
     print("bands", dict(Counter(item["band"] for item in records)))
-    print("short BH", sum(1 for item in records if item["days"] < 7))
-    for name in ("BMBJN55C", "D50AR9B", "D50AR9A"):
-        hit = next(item for item in records if item["name"] == name)
+    sample = next((item for item in records if item["reduce"] and item["plan"]["n_load"]), None)
+    if sample:
+        plan = sample["plan"]
         print(
-            name,
-            "band", hit["band"],
-            "trx", hit["trx"],
-            "voice", None if hit["voice"] is None else round(hit["voice"], 2),
-            "tchcong", round(hit["tch_cong"], 3),
-            "sdcong", round(hit["sdcch_cong"], 3),
-            "cdrn", None if hit["cdr_n"] is None else round(hit["cdr_n"], 2),
-            "dl", None if hit["dl"] is None else round(hit["dl"], 2),
-            "ul", None if hit["ul"] is None else round(hit["ul"], 2),
-            "hosr", None if hit["hosr"] is None else round(hit["hosr"], 2),
-            "icm", None if hit["icm"] is None else round(hit["icm"], 2),
-            "cdr", None if hit["cdr"] is None else round(hit["cdr"], 3),
-            "reduce", hit["reduce"],
-            "add", hit["add"],
-            "reasonR", hit["reason_r"],
-            "reasonA", hit["reason_a"],
+            "sample", sample["name"], "trx", sample["trx"], "avail", round(sample["avail"], 2),
+            "carried", round(sample["carried"], 2), "voice", round(sample["voice"], 2),
+            "voice_after", None if plan["voice_after"] is None else round(plan["voice_after"], 2),
+            "g1800", plan["n_add"], "final_trx", plan["trx_final"],
+            "voice_final", None if plan["voice_final"] is None else round(plan["voice_final"], 2),
         )
 
 
