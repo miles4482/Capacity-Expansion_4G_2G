@@ -4,8 +4,9 @@
 Busy-hour files supply voice load and the capacity KPIs.
 Daily files supply CDR, HOSR, quality, interference, and the other KPIs.
 Both files have one row per cell per day. Each cell is averaged over the
-dates present for that cell. Traffic Erlang is then multiplied by 24.
-Voice load uses the busy-hour traffic after that multiplication.
+dates present for that cell. Busy-hour Erlang is already one hour, so voice
+load uses that average with no x24. Daily Erlang is an hourly average, so
+daily traffic is that average multiplied by 24.
 
   2G Capacity File_V1_BH.rar
   2G Capacity File_V2_BH.rar
@@ -74,7 +75,7 @@ PARAMS = [
     ("pTRXKeep", 2, "TRX", "TRX kept when a G900 cell is reduced"),
     ("pAddTRXMin", 0, "TRX", "G1800 addition applies at every TRX count. 0 means all scenarios"),
     ("pDailyDays", 7, "days", "Flag a cell when fewer than this many dates are available. Averages use the dates present"),
-    ("pTrafficHours", 24, "hours", "Multiply busy-hour and daily traffic Erlang by this after the date average"),
+    ("pTrafficHours", 24, "hours", "Multiply daily traffic Erlang by this after the date average. Busy-hour Erlang is already one hour and is not multiplied."),
 ]
 
 
@@ -192,8 +193,8 @@ def prepare(bh_cells, daily_cells):
         k3014_avg = item["K3014:Traffic Volume on TCH(Erl)"] / days
         k3034_avg = item["K3034:TCHH Traffic Volume(Erl)"] / days
         k3004_avg = item["K3004:Traffic Volume on SDCCH(Erl)"] / days
-        carried = k3014_avg * TRAFFIC_HOURS
-        tchh = k3034_avg * TRAFFIC_HOURS
+        carried = k3014_avg
+        tchh = k3034_avg
         avail = item["K3015:Available TCHs"] / days
         half = (k3034_avg / k3014_avg) if k3014_avg > 0 else 0.0
         capacity = avail * (1.0 + half)
@@ -328,7 +329,7 @@ def prepare(bh_cells, daily_cells):
             "k3004_avg": k3004_avg,
             "carried": carried,
             "tchh": tchh,
-            "sdcch_erl": k3004_avg * TRAFFIC_HOURS,
+            "sdcch_erl": k3004_avg,
             "avail": avail,
             "configured_tch": item["K3016:Configured TCHs"] / days,
             "half_rate": half,
@@ -660,11 +661,11 @@ def build(records):
             return ref(name, r)
 
         formulas = {
-            "BH Carried TCH, Erl": f'={F("BH K3014 avg")}*pTrafficHours',
+            "BH Carried TCH, Erl": f'={F("BH K3014 avg")}',
             "BH Carried formula": f'=FORMULATEXT({F("BH Carried TCH, Erl")})',
-            "BH TCHH, Erl": f'={F("BH K3034 avg")}*pTrafficHours',
+            "BH TCHH, Erl": f'={F("BH K3034 avg")}',
             "BH TCHH formula": f'=FORMULATEXT({F("BH TCHH, Erl")})',
-            "BH SDCCH, Erl": f'={F("BH K3004 avg")}*pTrafficHours',
+            "BH SDCCH, Erl": f'={F("BH K3004 avg")}',
             "BH SDCCH formula": f'=FORMULATEXT({F("BH SDCCH, Erl")})',
             "Half Rate Traffic Ratio": f'=IF({F("BH Carried TCH, Erl")}=0,0,{F("BH TCHH, Erl")}/{F("BH Carried TCH, Erl")})',
             "Half Rate formula": f'=FORMULATEXT({F("Half Rate Traffic Ratio")})',
@@ -963,7 +964,7 @@ def build(records):
         "B3",
         "Voice load, available TCH, half-rate ratio, TCH congestion, and SDCCH congestion come from the busy-hour files. "
         "CDR_N, HOSR, DL and UL bad quality, ICM band 4-5, incoming HOSR, and CSSR come from the daily files. "
-        "Every KPI is the average of the dates available for that cell. Traffic Erlang from both files is then multiplied by 24. Voice load uses the busy-hour traffic after that multiplication.",
+        "Every KPI is the average of the dates available for that cell. Busy-hour Erlang is already one hour, so voice load uses that average with no x24. Daily Erlang is an hourly average, so daily traffic is multiplied by 24 and is not used in voice load.",
         note_fmt,
     )
     summary.set_row(2, 48)
@@ -1064,7 +1065,7 @@ def build(records):
     notes = [
         "G900 TRX Reduction is the list of G900 cells that go down to 2 TRX. TRX removed is configured TRX minus 2. A red voice-load-after-cut value is the busy-hour load if the remaining 2 TRX carry today's traffic and available TCH scales with the TRX count.",
         "G1800 Addition is the list of G900 cells proposed for a new DCS1800 cell. A cell that already has 1800 TCH is not on this list. The voice-load band says whether the cell is at or above 70% or below 70%. Voice load below 70% does not by itself add a cell.",
-        "All Cells has one row per cell. Gray columns are the date averages from the files. Navy, orange, and blue columns are formulas. BH Carried TCH multiplies the busy-hour K3014 average by 24, and that figure is the carried traffic in voice load. Daily avg TCH does the same multiplication for the daily file and is not used in voice load.",
+        "All Cells has one row per cell. Gray columns are the date averages from the files. Navy, orange, and blue columns are formulas. BH Carried TCH is the busy-hour K3014 average, already one hour, and that figure is the carried traffic in voice load. Daily avg TCH multiplies the daily K3014 average by 24 and is not used in voice load.",
         "Parameters holds the thresholds. Changing a yellow cell recalculates All Cells and the counts on this Summary. Filter All Cells on G900 TRX Reduction or G1800 Cell Addition after a threshold change. The two action sheets stay at the thresholds saved with this file.",
         "Rules records the file split, the formulas, and the reading of each OR gate.",
     ]
@@ -1107,7 +1108,7 @@ def build(records):
         "",
         "What comes from the busy hour",
         "Voice load, carried TCH Erlang (K3014), half-rate TCH Erlang (K3034), available TCH (K3015), configured TRX (S3655), configured TCH (K3016), SDCCH Erlang (K3004), TCH congestion, and SDCCH congestion.",
-        "Each of those starts as the average of the cell's available busy-hour dates. A ratio uses average numerator over average denominator, which is the same as the sum over the sum. Traffic Erlang (K3014, K3034, K3004) is then multiplied by 24. Available TCH, configured TRX, and the congestion counters are not multiplied by 24.",
+        "Each of those starts as the average of the cell's available busy-hour dates. A ratio uses average numerator over average denominator, which is the same as the sum over the sum. Busy-hour traffic Erlang (K3014, K3034, K3004) is already the one-hour value, so it is not multiplied by 24. Available TCH, configured TRX, and the congestion counters are not multiplied by 24 either.",
         "TCH Cong, % = TCH Congestion_N / TCH Congestion_D x 100. No denominator is 0%.",
         "SDCCH Cong, % = K3001 Failed SDCCH seizures due to busy SDCCH / K3000 SDCCH seizure requests x 100. The capacity file has no SDCCH congestion column, so this is the pair used for the under-1% gate. No denominator is 0%.",
         "",
@@ -1121,9 +1122,9 @@ def build(records):
         "Where a denominator is zero, voice load, bad quality, CDR, HOSR, ICM, incoming HOSR, and CSSR are blank, and a greater-than or less-than test on that KPI is not met.",
         "",
         "Voice load",
-        "Half Rate Traffic Ratio = BH K3034 / BH K3014. Multiplying both by 24 leaves the ratio unchanged. The ratio is 0 when busy-hour K3014 is 0.",
-        "Capacity, Erl = Avail TCH Mean x (1 + Half Rate Traffic Ratio). Avail TCH Mean is the busy-hour average of K3015 and is not multiplied by 24.",
-        "Voice Load, % = BH carried TCH / Capacity x 100. BH carried TCH is the busy-hour average of K3014 multiplied by 24.",
+        "Half Rate Traffic Ratio = BH K3034 / BH K3014. Both are the busy-hour date average, with no x24. The ratio is 0 when busy-hour K3014 is 0.",
+        "Capacity, Erl = Avail TCH Mean x (1 + Half Rate Traffic Ratio). Avail TCH Mean is the busy-hour average of K3015: sum of K3015 across the cell's dates, divided by the number of those dates.",
+        "Voice Load, % = BH carried TCH / Capacity x 100. BH carried TCH is the busy-hour average of K3014. It is already one hour, so it is not multiplied by 24.",
         "",
         "Band",
         "A cell is G900 when the 900 TCH counters (R3027A and R3028A) are above zero across the week and the 1800 counters (R3027B and R3028B) are zero. The reverse is G1800. Both means the cell already carries 900 and 1800 TCH. Those counters are busy-hour sample counters, used only to tell the band. Actions apply to G900 cells.",
