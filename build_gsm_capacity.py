@@ -29,7 +29,7 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v3"
+VERSION = "v4"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 TRAFFIC_HOURS = 24
 BSC_ORDER = ["MYMH05", "MYMH06", "MYMH07", "SYLH04", "TNGH12"]
@@ -652,7 +652,7 @@ def build(records):
             fmt = header
         else:
             fmt = kind_header[kind]
-        all_cells.set_column(pos, pos, width)
+        all_cells.set_column(pos, pos, 58 if kind == "formula_show" else width)
         all_cells.write(0, pos, name, fmt)
 
     for offset, item in enumerate(records):
@@ -664,44 +664,24 @@ def build(records):
 
         formulas = {
             "BH Carried TCH, Erl": f'={F("BH K3014 avg")}',
-            "BH Carried formula": f'=FORMULATEXT({F("BH Carried TCH, Erl")})',
             "BH TCHH, Erl": f'={F("BH K3034 avg")}',
-            "BH TCHH formula": f'=FORMULATEXT({F("BH TCHH, Erl")})',
             "BH SDCCH, Erl": f'={F("BH K3004 avg")}',
-            "BH SDCCH formula": f'=FORMULATEXT({F("BH SDCCH, Erl")})',
             "Half Rate Traffic Ratio": f'=IF({F("BH Carried TCH, Erl")}=0,0,{F("BH TCHH, Erl")}/{F("BH Carried TCH, Erl")})',
-            "Half Rate formula": f'=FORMULATEXT({F("Half Rate Traffic Ratio")})',
             "Capacity, Erl": f'={F("Avail TCH Mean")}*(1+{F("Half Rate Traffic Ratio")})',
-            "Capacity formula": f'=FORMULATEXT({F("Capacity, Erl")})',
             "Voice Load, %": f'=IF({F("Capacity, Erl")}=0,"",{F("BH Carried TCH, Erl")}/{F("Capacity, Erl")}*100)',
-            "Voice Load formula": f'=FORMULATEXT({F("Voice Load, %")})',
             "TCH Cong, %": f'=IF({F("BH TCH Cong_D avg")}=0,0,{F("BH TCH Cong_N avg")}/{F("BH TCH Cong_D avg")}*100)',
-            "TCH Cong formula": f'=FORMULATEXT({F("TCH Cong, %")})',
             "SDCCH Cong, %": f'=IF({F("BH SDCCH Request avg")}=0,0,{F("BH SDCCH Busy Fail avg")}/{F("BH SDCCH Request avg")}*100)',
-            "SDCCH Cong formula": f'=FORMULATEXT({F("SDCCH Cong, %")})',
             "CDR_N daily avg": f'={F("File CDR_N")}',
-            "CDR_N formula": f'=FORMULATEXT({F("CDR_N daily avg")})',
             "DL Bad Qual(6~7), %": f'=IF({F("File DL Qual_D")}=0,"",{F("File DL Bad_N")}/{F("File DL Qual_D")}*100)',
-            "DL Bad Qual formula": f'=FORMULATEXT({F("DL Bad Qual(6~7), %")})',
             "UL Bad Qual(6~7), %": f'=IF({F("File UL Qual_D")}=0,"",{F("File UL Bad_N")}/{F("File UL Qual_D")}*100)',
-            "UL Bad Qual formula": f'=FORMULATEXT({F("UL Bad Qual(6~7), %")})',
             "CDR, %": f'=IF({F("File CDR_D")}=0,"",{F("File CDR_N")}/{F("File CDR_D")}*100)',
-            "CDR formula": f'=FORMULATEXT({F("CDR, %")})',
             "HOSR_Out, %": f'=IF({F("File HOSR_D")}=0,"",{F("File HOSR_N")}/{F("File HOSR_D")}*100)',
-            "HOSR formula": f'=FORMULATEXT({F("HOSR_Out, %")})',
             "ICM_B4~5, %": f'=IF({F("File ICM_D")}=0,"",{F("File ICM 4-5")}/{F("File ICM_D")}*100)',
-            "ICM formula": f'=FORMULATEXT({F("ICM_B4~5, %")})',
             "Incoming HOSR, %": f'=IF({F("File Incoming HOSR_D")}=0,"",{F("File Incoming HOSR_N")}/{F("File Incoming HOSR_D")}*100)',
-            "Incoming HOSR formula": f'=FORMULATEXT({F("Incoming HOSR, %")})',
             "CSSR, %": f'=IF({F("File CSSR_D")}=0,"",{F("File CSSR_N")}/{F("File CSSR_D")}*100)',
-            "CSSR formula": f'=FORMULATEXT({F("CSSR, %")})',
             "Daily avg TCH, Erl": f'={F("Daily K3014 avg")}*pTrafficHours',
-            "Daily TCH formula": f'=FORMULATEXT({F("Daily avg TCH, Erl")})',
             "Daily avg TCHH, Erl": f'={F("Daily K3034 avg")}*pTrafficHours',
-            "Daily TCHH formula": f'=FORMULATEXT({F("Daily avg TCHH, Erl")})',
             "Daily avg SDCCH, Erl": f'={F("Daily K3004 avg")}*pTrafficHours',
-            "Daily SDCCH formula": f'=FORMULATEXT({F("Daily avg SDCCH, Erl")})',
-            "Voice Load after formula": f'=FORMULATEXT({F("Voice Load after 2 TRX, %")})',
             "F TRX>2": f'=IF({F("TRX Configured")}>pTRXAbove,1,0)',
             "F Cong<1": f'=IF(AND({F("TCH Cong, %")}<pCongMax,{F("SDCCH Cong, %")}<pCongMax),1,0)',
             "F Load<=60": f'=IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}<=pVoiceLoadMax),1,0)',
@@ -772,6 +752,28 @@ def build(records):
                 f',3,400)'
             ),
         }
+        formula_text = {
+            "BH Carried formula": formulas["BH Carried TCH, Erl"],
+            "BH TCHH formula": formulas["BH TCHH, Erl"],
+            "BH SDCCH formula": formulas["BH SDCCH, Erl"],
+            "Half Rate formula": formulas["Half Rate Traffic Ratio"],
+            "Capacity formula": formulas["Capacity, Erl"],
+            "Voice Load formula": formulas["Voice Load, %"],
+            "TCH Cong formula": formulas["TCH Cong, %"],
+            "SDCCH Cong formula": formulas["SDCCH Cong, %"],
+            "CDR_N formula": formulas["CDR_N daily avg"],
+            "DL Bad Qual formula": formulas["DL Bad Qual(6~7), %"],
+            "UL Bad Qual formula": formulas["UL Bad Qual(6~7), %"],
+            "CDR formula": formulas["CDR, %"],
+            "HOSR formula": formulas["HOSR_Out, %"],
+            "ICM formula": formulas["ICM_B4~5, %"],
+            "Incoming HOSR formula": formulas["Incoming HOSR, %"],
+            "CSSR formula": formulas["CSSR, %"],
+            "Daily TCH formula": formulas["Daily avg TCH, Erl"],
+            "Daily TCHH formula": formulas["Daily avg TCHH, Erl"],
+            "Daily SDCCH formula": formulas["Daily avg SDCCH, Erl"],
+            "Voice Load after formula": formulas["Voice Load after 2 TRX, %"],
+        }
 
         values = {
             "Source": item["source"],
@@ -816,7 +818,9 @@ def build(records):
         }
         for pos, (name, kind, _width) in enumerate(columns):
             fmt = value_formats[kind]
-            if name in formulas:
+            if name in formula_text:
+                all_cells.write_string(row - 1, pos, formula_text[name], fmt)
+            elif name in formulas:
                 all_cells.write_formula(row - 1, pos, formulas[name], fmt)
             else:
                 value = values[name]
@@ -1105,6 +1109,7 @@ def build(records):
         "v1: first workbook from the 7-day files. Busy-hour and daily traffic were both multiplied by 24.",
         "v2: each KPI formula sits in the column immediately after its result. Busy-hour traffic was still multiplied by 24.",
         "v3: busy-hour Erlang is the one-hour value and is not multiplied by 24. Daily traffic remains the hourly average multiplied by 24. The formula columns from v2 are kept.",
+        "v4: the formula column beside each KPI is the formula text. v2 and v3 used FORMULATEXT, which this spreadsheet shows as #NAME?.",
         "",
         "Purpose",
         "G900 TRX comes down on cells that can release TRX while SDCCH and TCH congestion stay under 1%. A G1800 cell is proposed on a G900 cell whose busy-hour load, handover, quality, drops, or interference meet the addition rule.",
