@@ -29,7 +29,7 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v4"
+VERSION = "v5"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 TRAFFIC_HOURS = 24
 BSC_ORDER = ["MYMH05", "MYMH06", "MYMH07", "SYLH04", "TNGH12"]
@@ -491,68 +491,45 @@ def build(records):
         ("Daily Days", "input_int", 12),
         ("TRX Configured", "input_int", 12),
         ("BH K3014 avg", "input_num", 14),
-        ("BH Carried TCH, Erl", "formula_num", 16),
-        ("BH Carried formula", "formula_show", 36),
         ("BH K3034 avg", "input_num", 13),
-        ("BH TCHH, Erl", "formula_num", 14),
-        ("BH TCHH formula", "formula_show", 36),
         ("Half Rate Traffic Ratio", "formula_ratio", 14),
-        ("Half Rate formula", "formula_show", 42),
         ("Avail TCH Mean", "input_num", 14),
         ("Capacity, Erl", "formula_num", 13),
-        ("Capacity formula", "formula_show", 42),
         ("Voice Load, %", "formula_num", 13),
-        ("Voice Load formula", "formula_show", 46),
         ("BH TCH Cong_N avg", "counter", 14),
         ("BH TCH Cong_D avg", "counter", 14),
         ("TCH Cong, %", "formula_num", 12),
-        ("TCH Cong formula", "formula_show", 42),
         ("BH SDCCH Busy Fail avg", "counter", 16),
         ("BH SDCCH Request avg", "counter", 16),
         ("SDCCH Cong, %", "formula_num", 13),
-        ("SDCCH Cong formula", "formula_show", 46),
         ("BH K3004 avg", "counter", 14),
-        ("BH SDCCH, Erl", "formula_num", 14),
-        ("BH SDCCH formula", "formula_show", 36),
         ("Daily K3014 avg", "counter", 14),
         ("Daily avg TCH, Erl", "formula_num", 14),
-        ("Daily TCH formula", "formula_show", 36),
         ("Daily K3034 avg", "counter", 14),
         ("Daily avg TCHH, Erl", "formula_num", 14),
-        ("Daily TCHH formula", "formula_show", 36),
         ("Daily K3004 avg", "counter", 14),
         ("Daily avg SDCCH, Erl", "formula_num", 15),
-        ("Daily SDCCH formula", "formula_show", 36),
-        ("File CDR_N", "counter", 12),
-        ("CDR_N daily avg", "formula_num", 13),
-        ("CDR_N formula", "formula_show", 28),
+        ("CDR_N daily avg", "counter", 14),
         ("File CDR_D", "counter", 12),
         ("CDR, %", "formula_num", 12),
-        ("CDR formula", "formula_show", 36),
         ("File DL Bad_N", "counter", 13),
         ("File DL Qual_D", "counter", 14),
         ("DL Bad Qual(6~7), %", "formula_num", 14),
-        ("DL Bad Qual formula", "formula_show", 48),
         ("File UL Bad_N", "counter", 13),
         ("File UL Qual_D", "counter", 14),
         ("UL Bad Qual(6~7), %", "formula_num", 14),
-        ("UL Bad Qual formula", "formula_show", 48),
         ("File HOSR_N", "counter", 12),
         ("File HOSR_D", "counter", 12),
         ("HOSR_Out, %", "formula_num", 13),
-        ("HOSR formula", "formula_show", 36),
         ("File ICM 4-5", "counter", 13),
         ("File ICM_D", "counter", 13),
         ("ICM_B4~5, %", "formula_num", 13),
-        ("ICM formula", "formula_show", 42),
         ("File Incoming HOSR_N", "counter", 16),
         ("File Incoming HOSR_D", "counter", 16),
         ("Incoming HOSR, %", "formula_num", 14),
-        ("Incoming HOSR formula", "formula_show", 46),
         ("File CSSR_N", "counter", 12),
         ("File CSSR_D", "counter", 12),
         ("CSSR, %", "formula_num", 12),
-        ("CSSR formula", "formula_show", 36),
         ("BH Configured TCH", "counter", 14),
         ("R3027A TCHF 900 avg", "counter", 16),
         ("R3027B TCHF 1800 avg", "counter", 16),
@@ -562,7 +539,6 @@ def build(records):
         ("TRX Keep", "formula_int", 11),
         ("TRX Remove", "formula_int", 12),
         ("Voice Load after 2 TRX, %", "formula_num", 16),
-        ("Voice Load after formula", "formula_show", 42),
         ("Reduction Reason", "formula_wrap", 36),
         ("G1800 Cell Addition", "formula_center", 14),
         ("Voice Load Band", "formula_center", 14),
@@ -626,7 +602,6 @@ def build(records):
         "formula_center": header,
         "formula_int": header,
         "formula_wrap": header,
-        "formula_show": header,
         "flag": header,
     }
     value_formats = {
@@ -640,7 +615,6 @@ def build(records):
         "formula_center": cell_center,
         "formula_int": cell_int,
         "formula_wrap": wrap,
-        "formula_show": wrap,
         "flag": flag_fmt,
     }
     for pos, (name, kind, width) in enumerate(columns):
@@ -652,7 +626,7 @@ def build(records):
             fmt = header
         else:
             fmt = kind_header[kind]
-        all_cells.set_column(pos, pos, 58 if kind == "formula_show" else width)
+        all_cells.set_column(pos, pos, width)
         all_cells.write(0, pos, name, fmt)
 
     for offset, item in enumerate(records):
@@ -663,18 +637,14 @@ def build(records):
             return ref(name, r)
 
         formulas = {
-            "BH Carried TCH, Erl": f'={F("BH K3014 avg")}',
-            "BH TCHH, Erl": f'={F("BH K3034 avg")}',
-            "BH SDCCH, Erl": f'={F("BH K3004 avg")}',
-            "Half Rate Traffic Ratio": f'=IF({F("BH Carried TCH, Erl")}=0,0,{F("BH TCHH, Erl")}/{F("BH Carried TCH, Erl")})',
+            "Half Rate Traffic Ratio": f'=IF({F("BH K3014 avg")}=0,0,{F("BH K3034 avg")}/{F("BH K3014 avg")})',
             "Capacity, Erl": f'={F("Avail TCH Mean")}*(1+{F("Half Rate Traffic Ratio")})',
-            "Voice Load, %": f'=IF({F("Capacity, Erl")}=0,"",{F("BH Carried TCH, Erl")}/{F("Capacity, Erl")}*100)',
+            "Voice Load, %": f'=IF({F("Capacity, Erl")}=0,"",{F("BH K3014 avg")}/{F("Capacity, Erl")}*100)',
             "TCH Cong, %": f'=IF({F("BH TCH Cong_D avg")}=0,0,{F("BH TCH Cong_N avg")}/{F("BH TCH Cong_D avg")}*100)',
             "SDCCH Cong, %": f'=IF({F("BH SDCCH Request avg")}=0,0,{F("BH SDCCH Busy Fail avg")}/{F("BH SDCCH Request avg")}*100)',
-            "CDR_N daily avg": f'={F("File CDR_N")}',
             "DL Bad Qual(6~7), %": f'=IF({F("File DL Qual_D")}=0,"",{F("File DL Bad_N")}/{F("File DL Qual_D")}*100)',
             "UL Bad Qual(6~7), %": f'=IF({F("File UL Qual_D")}=0,"",{F("File UL Bad_N")}/{F("File UL Qual_D")}*100)',
-            "CDR, %": f'=IF({F("File CDR_D")}=0,"",{F("File CDR_N")}/{F("File CDR_D")}*100)',
+            "CDR, %": f'=IF({F("File CDR_D")}=0,"",{F("CDR_N daily avg")}/{F("File CDR_D")}*100)',
             "HOSR_Out, %": f'=IF({F("File HOSR_D")}=0,"",{F("File HOSR_N")}/{F("File HOSR_D")}*100)',
             "ICM_B4~5, %": f'=IF({F("File ICM_D")}=0,"",{F("File ICM 4-5")}/{F("File ICM_D")}*100)',
             "Incoming HOSR, %": f'=IF({F("File Incoming HOSR_D")}=0,"",{F("File Incoming HOSR_N")}/{F("File Incoming HOSR_D")}*100)',
@@ -752,28 +722,6 @@ def build(records):
                 f',3,400)'
             ),
         }
-        formula_text = {
-            "BH Carried formula": formulas["BH Carried TCH, Erl"],
-            "BH TCHH formula": formulas["BH TCHH, Erl"],
-            "BH SDCCH formula": formulas["BH SDCCH, Erl"],
-            "Half Rate formula": formulas["Half Rate Traffic Ratio"],
-            "Capacity formula": formulas["Capacity, Erl"],
-            "Voice Load formula": formulas["Voice Load, %"],
-            "TCH Cong formula": formulas["TCH Cong, %"],
-            "SDCCH Cong formula": formulas["SDCCH Cong, %"],
-            "CDR_N formula": formulas["CDR_N daily avg"],
-            "DL Bad Qual formula": formulas["DL Bad Qual(6~7), %"],
-            "UL Bad Qual formula": formulas["UL Bad Qual(6~7), %"],
-            "CDR formula": formulas["CDR, %"],
-            "HOSR formula": formulas["HOSR_Out, %"],
-            "ICM formula": formulas["ICM_B4~5, %"],
-            "Incoming HOSR formula": formulas["Incoming HOSR, %"],
-            "CSSR formula": formulas["CSSR, %"],
-            "Daily TCH formula": formulas["Daily avg TCH, Erl"],
-            "Daily TCHH formula": formulas["Daily avg TCHH, Erl"],
-            "Daily SDCCH formula": formulas["Daily avg SDCCH, Erl"],
-            "Voice Load after formula": formulas["Voice Load after 2 TRX, %"],
-        }
 
         values = {
             "Source": item["source"],
@@ -792,7 +740,7 @@ def build(records):
             "BH TCH Cong_D avg": item["tchd_avg"],
             "BH SDCCH Busy Fail avg": item["sdn_avg"],
             "BH SDCCH Request avg": item["sdd_avg"],
-            "File CDR_N": daily.get("cdrn", 0.0),
+            "CDR_N daily avg": daily.get("cdrn", 0.0),
             "File CDR_D": daily.get("cdrd", 0.0),
             "File HOSR_N": daily.get("hosrn", 0.0),
             "File HOSR_D": daily.get("hosrd", 0.0),
@@ -818,9 +766,7 @@ def build(records):
         }
         for pos, (name, kind, _width) in enumerate(columns):
             fmt = value_formats[kind]
-            if name in formula_text:
-                all_cells.write_string(row - 1, pos, formula_text[name], fmt)
-            elif name in formulas:
+            if name in formulas:
                 all_cells.write_formula(row - 1, pos, formulas[name], fmt)
             else:
                 value = values[name]
@@ -1071,7 +1017,7 @@ def build(records):
     notes = [
         "G900 TRX Reduction is the list of G900 cells that go down to 2 TRX. TRX removed is configured TRX minus 2. A red voice-load-after-cut value is the busy-hour load if the remaining 2 TRX carry today's traffic and available TCH scales with the TRX count.",
         "G1800 Addition is the list of G900 cells proposed for a new DCS1800 cell. A cell that already has 1800 TCH is not on this list. The voice-load band says whether the cell is at or above 70% or below 70%. Voice load below 70% does not by itself add a cell.",
-        "All Cells has one row per cell. Gray columns are the date averages from the files. Navy, orange, and blue columns are formulas. BH Carried TCH is the busy-hour K3014 average, already one hour, and that figure is the carried traffic in voice load. Daily avg TCH multiplies the daily K3014 average by 24 and is not used in voice load.",
+        "All Cells has one row per cell. Gray columns are the date averages, including each numerator and denominator. The KPI column immediately after that pair is the calculation. There is no extra column that prints the formula text. BH K3014 avg is the one-hour carried TCH used in voice load. Daily avg TCH multiplies the daily K3014 average by 24 and is not used in voice load.",
         "Parameters holds the thresholds. Changing a yellow cell recalculates All Cells and the counts on this Summary. Filter All Cells on G900 TRX Reduction or G1800 Cell Addition after a threshold change. The two action sheets stay at the thresholds saved with this file.",
         "Rules records the file split, the formulas, and the reading of each OR gate.",
     ]
@@ -1110,6 +1056,7 @@ def build(records):
         "v2: each KPI formula sits in the column immediately after its result. Busy-hour traffic was still multiplied by 24.",
         "v3: busy-hour Erlang is the one-hour value and is not multiplied by 24. Daily traffic remains the hourly average multiplied by 24. The formula columns from v2 are kept.",
         "v4: the formula column beside each KPI is the formula text. v2 and v3 used FORMULATEXT, which this spreadsheet shows as #NAME?.",
+        "v5: those formula-text columns are removed. Each KPI block keeps the numerator average, the denominator average, and the KPI. The KPI cell still holds the calculation.",
         "",
         "Purpose",
         "G900 TRX comes down on cells that can release TRX while SDCCH and TCH congestion stay under 1%. A G1800 cell is proposed on a G900 cell whose busy-hour load, handover, quality, drops, or interference meet the addition rule.",
