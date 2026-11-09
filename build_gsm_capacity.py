@@ -33,13 +33,13 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v15"
-# Rule v11 is the decision in this file.
+VERSION = "v16"
+# Rule v12 is the decision in this file.
 # Each version sheet is G900 reduction first, then G1800 addition.
-# GSM_Rules_Store_v7.xlsx is the same store.
+# GSM_Rules_Store_v8.xlsx is the same store.
 # Capacity is read from the Half Rate 5% sheet, 60% column.
-ACTIVE_RULE = "v11"
-ACTIVE_RULE_FILE = "GSM_Rules_Store_v7.xlsx"
+ACTIVE_RULE = "v12"
+ACTIVE_RULE_FILE = "GSM_Rules_Store_v8.xlsx"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
@@ -103,9 +103,9 @@ PARAMS = [
     ("pHR", 0.6, "ratio", "Design half-rate ratio for Erlang B capacity. Equivalent channels = available TCH x (1 + this). The measured K3034/K3014 ratio is not used"),
     ("pVoiceLoadHigh", 80, "%", "After the G900 reduction step, voice load at or above this starts the G1800 TRX calculation"),
     ("pVoiceLoadTarget", 60, "%", "G1800 TRX are added until busy-hour voice load is below this"),
-    ("pCDRnMin", 10, "drops/day", "Daily-average CDR_N at or above this adds 1 G1800 TRX"),
-    ("pBadQualMin", 2, "%", "Both DL and UL bad quality above this adds 1 G1800 TRX"),
-    ("pICMMin", 50, "%", "High ICM band 4-5 means ICM_B4~5 above this. Used only when reduction, load, CDR, and bad quality did not trigger"),
+    ("pCDRnMin", 10, "drops/day", "Daily-average CDR_N at or above this is a G1800 problem line. CDR, quality, and high ICM share one G1800 TRX"),
+    ("pBadQualMin", 2, "%", "Both DL and UL bad quality above this is a G1800 problem line. Problem lines share one G1800 TRX"),
+    ("pICMMin", 50, "%", "High ICM band 4-5 means ICM_B4~5 above this. Used only when reduction, load, CDR, and bad quality did not trigger. It shares the one problem-line TRX"),
     ("pMaxG1800TRX", G1800_MAX_TRX, "TRX", "Upper limit of the G1800 TRX table used to bring voice load under the target"),
     ("pDailyDays", 7, "days", "Flag a cell when fewer than this many dates are available. Averages use the dates present"),
     ("pTrafficHours", 24, "hours", "Multiply daily traffic Erlang by this after the date average. Busy-hour Erlang is already one hour and is not multiplied."),
@@ -293,18 +293,31 @@ def decide(band, trx, voice, tch_cong, sdcch_cong, rr307, cdr_n, dl, ul, icm, ca
 
     # The extra removal is judged on the TRX left after the reduction step.
     # It removes one G900 TRX, once, and only while 3 or more TRX are still there.
-    # CDR and bad quality can each add a G1800 TRX, but they do not each remove a G900 TRX.
+    # CDR, quality, and ICM share one G1800 TRX. They do not each remove a G900 TRX.
     still_three = (not reduce) and trx_after >= 3
     removed_cdr = 1 if g900 and still_three and cdr_hit else 0
     removed_qual = 1 if g900 and still_three and qual_hit and not cdr_hit else 0
     removed_icm = 1 if n_icm == 1 and still_three else 0
     removed = removed_cdr + removed_qual + removed_icm
     trx_final = trx_after if reduce else max(0, trx - removed)
-    n_add = n_load + n_cdr + n_qual + n_icm
+    tch_final = tch_for_trx(avail, trx, trx_final)
+    g900_cap = capacity_of(tch_final, cfg["pHR"], table)
+    # Problem lines share one TRX. The load count already brings voice under 60%,
+    # so a problem line does not add another TRX on top of it. If one shared TRX
+    # still leaves voice at or above 60%, add the smallest number that goes under.
+    n_problem = 0
+    if g900 and n_load == 0 and (n_cdr or n_qual or n_icm):
+        n_problem = 1
+        while n_problem < cfg["pMaxG1800TRX"]:
+            cap = g900_cap + caps[n_problem]
+            voice_try = (carried / cap * 100.0) if cap > 0 else None
+            if voice_try is None or voice_try < cfg["pVoiceLoadTarget"]:
+                break
+            n_problem += 1
+    n_add = n_load + n_problem
     if n_add > G1800_TABLE_TRX:
         raise SystemExit(f"G1800 TRX {n_add} is past the capacity table")
-    tch_final = tch_for_trx(avail, trx, trx_final)
-    cap_final = capacity_of(tch_final, cfg["pHR"], table) + (caps[n_add] if n_add <= G1800_MAX_TRX else caps[-1])
+    cap_final = g900_cap + (caps[n_add] if n_add <= G1800_MAX_TRX else caps[-1])
     voice_final = (carried / cap_final * 100.0) if cap_final > 0 else None
     return {
         "reduce": reduce,
@@ -319,6 +332,7 @@ def decide(band, trx, voice, tch_cong, sdcch_cong, rr307, cdr_n, dl, ul, icm, ca
         "n_cdr": n_cdr,
         "n_qual": n_qual,
         "n_icm": n_icm,
+        "n_problem": n_problem,
         "removed_cdr": removed_cdr,
         "removed_qual": removed_qual,
         "removed_icm": removed_icm,
@@ -363,9 +377,9 @@ def self_check(table, caps):
     if hot["n_load"] < G1800_MAX_TRX and not (hot["voice_final"] < cfg["pVoiceLoadTarget"]):
         raise SystemExit(f"G1800 add did not take load under 60%: {hot}")
     # No full reduction. Four TRX are still there, so one more G900 TRX comes off, not two.
-    # CDR and bad quality each still add their own G1800 TRX.
+    # CDR and bad quality share one G1800 TRX.
     both = decide("G900", 4, 50, 0.2, 0.2, 100, 12, 3, 3, 80, 8, 30, table, caps, cfg)
-    if both["reduce"] or both["n_cdr"] != 1 or both["n_qual"] != 1 or both["n_icm"] != 0 or both["trx_final"] != 3 or both["trx_remove"] != 1:
+    if both["reduce"] or both["n_cdr"] != 1 or both["n_qual"] != 1 or both["n_icm"] != 0 or both["n_add"] != 1 or both["trx_final"] != 3 or both["trx_remove"] != 1:
         raise SystemExit(f"CDR and quality path failed: {both}")
     # ICM only when the other lines are quiet. High TCH congestion with RR307 at 99 blocks the cut. 4 TRX loses 1.
     icm_only = decide("G900", 4, 20, 2.0, 0.2, 99, 1, 0.2, 0.2, 70, 3, 30, table, caps, cfg)
@@ -375,9 +389,9 @@ def self_check(table, caps):
     locked = decide("G900", 4, 20, 0.2, 0.1, 100, 15, 0.2, 0.2, 10, 2, 30, table, caps, cfg)
     if not locked["reduce"] or locked["trx_final"] != 2 or locked["n_cdr"] != 1 or locked["removed_cdr"] != 0:
         raise SystemExit(f"locked reduction failed: {locked}")
-    # 3 TRX can lose only one. The second problem still adds its G1800 TRX.
+    # 3 TRX can lose only one. CDR and quality share one G1800 TRX.
     short = decide("G900", 3, 50, 0.2, 0.2, 100, 12, 3, 4, 10, 6, 21, table, caps, cfg)
-    if short["reduce"] or short["trx_final"] != 2 or short["n_add"] != 2 or short["trx_remove"] != 1:
+    if short["reduce"] or short["trx_final"] != 2 or short["n_add"] != 1 or short["trx_remove"] != 1:
         raise SystemExit(f"3 TRX sequential remove failed: {short}")
     other = decide("G1800", 4, 10, 0, 0, 100, 20, 5, 5, 90, 4, 20, table, caps, cfg)
     if other["reduce"] or other["n_add"] or other["trx_remove"]:
@@ -541,17 +555,29 @@ def prepare(bh_cells, daily_cells, table, caps, cfg):
                     f"SDCCH cong<{cfg['pSDCCHCongMax']}%, voice load<={cfg['pVoiceLoadMax']}%"
                 )
         reasons_a = []
+        problem_bits = []
+        if plan["n_cdr"]:
+            problem_bits.append(f"Daily CDR_N>={cfg['pCDRnMin']}")
+        if plan["n_qual"]:
+            problem_bits.append(f"DL and UL bad quality>{cfg['pBadQualMin']}%")
+        if plan["n_icm"]:
+            problem_bits.append(f"ICM band 4-5>{cfg['pICMMin']}% and no other trigger")
         if plan["n_load"]:
             reasons_a.append(
                 f"Voice load after G900 step {plan['voice_after']:.1f}% >= {cfg['pVoiceLoadHigh']}%, "
                 f"add {plan['n_load']} G1800 TRX toward <{cfg['pVoiceLoadTarget']}%"
             )
-        if plan["n_cdr"]:
-            reasons_a.append(f"Daily CDR_N>={cfg['pCDRnMin']}, add 1 G1800 TRX")
-        if plan["n_qual"]:
-            reasons_a.append(f"DL and UL bad quality>{cfg['pBadQualMin']}%, add 1 G1800 TRX")
-        if plan["n_icm"]:
-            reasons_a.append(f"ICM band 4-5>{cfg['pICMMin']}% and no other trigger, add 1 G1800 TRX")
+            if problem_bits:
+                reasons_a.append("A problem line also triggered. No extra G1800 TRX, because voice load is already brought under 60%")
+        elif plan["n_problem"]:
+            shared = "; ".join(problem_bits)
+            if plan["n_problem"] == 1:
+                reasons_a.append(f"{shared}. Problem lines share 1 G1800 TRX")
+            else:
+                reasons_a.append(
+                    f"{shared}. One G1800 TRX leaves voice load at or above {cfg['pVoiceLoadTarget']}%, "
+                    f"so add {plan['n_problem']} G1800 TRX"
+                )
         if plan["trx_remove"] and not reduce:
             reasons_a.append("After the G900 step at least 3 TRX remain, so 1 more G900 TRX is removed with the G1800 add")
         elif add and reduce:
@@ -807,9 +833,10 @@ def build(records, table):
         ("F CDR_N>=10", "flag", 12),
         ("F DL and UL>2", "flag", 13),
         ("F High ICM", "flag", 12),
-        ("G1800 TRX for CDR", "formula_int", 14),
-        ("G1800 TRX for quality", "formula_int", 16),
-        ("G1800 TRX for ICM", "formula_int", 14),
+        ("CDR line", "formula_int", 12),
+        ("Quality line", "formula_int", 14),
+        ("ICM line", "formula_int", 12),
+        ("G1800 TRX for problem lines", "formula_int", 18),
         ("G900 removed for CDR", "formula_int", 14),
         ("G900 removed for quality", "formula_int", 16),
         ("G900 removed for ICM", "formula_int", 14),
@@ -940,8 +967,8 @@ def build(records, table):
         "G900 TRX final", "TRX Remove",
     }
     decision_blue = {
-        "F Load after>=80", "G1800 TRX for load", "G1800 TRX for CDR", "G1800 TRX for quality",
-        "G1800 TRX for ICM", "G1800 TRX Add", "G1800 Addition", "Addition Reason",
+        "F Load after>=80", "G1800 TRX for load", "CDR line", "Quality line", "ICM line",
+        "G1800 TRX for problem lines", "G1800 TRX Add", "G1800 Addition", "Addition Reason",
         "TCH final", "Capacity final, Erl", "Voice Load final, %",
     }
     kind_header = {
@@ -1019,11 +1046,16 @@ def build(records, table):
                 f'ISNUMBER({F("UL Bad Qual(6~7), %")}),{F("UL Bad Qual(6~7), %")}>pBadQualMin),1,0)'
             ),
             "F High ICM": f'=IF(AND(ISNUMBER({F("ICM_B4~5, %")}),{F("ICM_B4~5, %")}>pICMMin),1,0)',
-            "G1800 TRX for CDR": f'=IF(AND({F("Band")}="G900",{F("F CDR_N>=10")}=1),1,0)',
-            "G1800 TRX for quality": f'=IF(AND({F("Band")}="G900",{F("F DL and UL>2")}=1),1,0)',
-            "G1800 TRX for ICM": (
+            "CDR line": f'=IF(AND({F("Band")}="G900",{F("F CDR_N>=10")}=1),1,0)',
+            "Quality line": f'=IF(AND({F("Band")}="G900",{F("F DL and UL>2")}=1),1,0)',
+            "ICM line": (
                 f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F Load after>=80")}<>1,'
                 f'{F("F CDR_N>=10")}<>1,{F("F DL and UL>2")}<>1,{F("F High ICM")}=1),1,0)'
+            ),
+            "G1800 TRX for problem lines": (
+                f'=IF(OR({F("Band")}<>"G900",{F("G1800 TRX for load")}>0,AND({F("CDR line")}=0,{F("Quality line")}=0,{F("ICM line")}=0)),0,'
+                f'IF({F("Traffic Volume on TCH_K3014_Avg")}/(pVoiceLoadTarget/100)-(' + half_rate_lookup(F("TCH final")) + f')<=0,1,'
+                f'MIN(pMaxG1800TRX,MAX(1,MATCH({F("Traffic Volume on TCH_K3014_Avg")}/(pVoiceLoadTarget/100)-(' + half_rate_lookup(F("TCH final")) + f'),G1800Cap,1)))))'
             ),
             "G900 removed for CDR": (
                 f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("TRX after reduction")}>=3,{F("F CDR_N>=10")}=1),1,0)'
@@ -1033,14 +1065,14 @@ def build(records, table):
                 f'{F("F DL and UL>2")}=1,{F("F CDR_N>=10")}<>1),1,0)'
             ),
             "G900 removed for ICM": (
-                f'=IF(AND({F("G1800 TRX for ICM")}=1,{F("TRX after reduction")}>=3),1,0)'
+                f'=IF(AND({F("ICM line")}=1,{F("TRX after reduction")}>=3),1,0)'
             ),
             "G900 TRX final": (
                 f'=IF({F("G900 TRX Reduction")}="Yes",MIN(pTRXKeep,{F("TRX Configured")}),'
                 f'MAX(0,{F("TRX Configured")}-{F("G900 removed for CDR")}-{F("G900 removed for quality")}-{F("G900 removed for ICM")}))'
             ),
             "TRX Remove": f'=MAX(0,{F("TRX Configured")}-{F("G900 TRX final")})',
-            "G1800 TRX Add": f'={F("G1800 TRX for load")}+{F("G1800 TRX for CDR")}+{F("G1800 TRX for quality")}+{F("G1800 TRX for ICM")}',
+            "G1800 TRX Add": f'={F("G1800 TRX for load")}+{F("G1800 TRX for problem lines")}',
             "G1800 Addition": f'=IF(AND({F("Band")}="G900",{F("G1800 TRX Add")}>0),"Yes","No")',
             "TCH final": f'=IF({F("TRX Configured")}=0,0,{F("Available TCHs_K3015_Avg")}*{F("G900 TRX final")}/{F("TRX Configured")})',
             "Capacity final, Erl": (
@@ -1057,9 +1089,13 @@ def build(records, table):
             "Addition Reason": (
                 f'=IF({F("G1800 TRX Add")}=0,"",MID('
                 f'IF({F("G1800 TRX for load")}>0,"; Voice load after G900 step "&TEXT({F("Voice Load after reduction, %")},"0.0")&"% >= "&pVoiceLoadHigh&"%, add "&{F("G1800 TRX for load")}&" G1800 TRX toward <"&pVoiceLoadTarget&"%","")'
-                f'&IF({F("G1800 TRX for CDR")}>0,"; Daily CDR_N>="&pCDRnMin&", add 1 G1800 TRX","")'
-                f'&IF({F("G1800 TRX for quality")}>0,"; DL and UL bad quality>"&pBadQualMin&"%, add 1 G1800 TRX","")'
-                f'&IF({F("G1800 TRX for ICM")}>0,"; ICM band 4-5>"&pICMMin&"% and no other trigger, add 1 G1800 TRX","")'
+                f'&IF(AND({F("G1800 TRX for load")}>0,OR({F("CDR line")}=1,{F("Quality line")}=1,{F("ICM line")}=1)),"; A problem line also triggered. No extra G1800 TRX, because voice load is already brought under "&pVoiceLoadTarget&"%","")'
+                f'&IF(AND({F("G1800 TRX for load")}=0,{F("G1800 TRX for problem lines")}>0),'
+                f'IF({F("CDR line")}=1,"; Daily CDR_N>="&pCDRnMin,"")'
+                f'&IF({F("Quality line")}=1,"; DL and UL bad quality>"&pBadQualMin&"%","")'
+                f'&IF({F("ICM line")}=1,"; ICM band 4-5>"&pICMMin&"% and no other trigger","")'
+                f'&IF({F("G1800 TRX for problem lines")}=1,"; Problem lines share 1 G1800 TRX",'
+                f'"; One G1800 TRX leaves voice load at or above "&pVoiceLoadTarget&"%, so add "&{F("G1800 TRX for problem lines")}&" G1800 TRX"),"")'
                 f'&IF(AND({F("TRX Remove")}>0,{F("G900 TRX Reduction")}<>"Yes"),"; After the G900 step at least 3 TRX remain, so 1 more G900 TRX is removed with the G1800 add","")'
                 f'&IF(AND({F("G1800 TRX Add")}>0,{F("G900 TRX Reduction")}="Yes"),"; G900 already reduced to the keep value, so it is not reduced further","")'
                 f',3,500))'
@@ -1114,9 +1150,10 @@ def build(records, table):
             "F CDR_N>=10": 1 if plan["cdr_hit"] else 0,
             "F DL and UL>2": 1 if plan["qual_hit"] else 0,
             "F High ICM": 1 if plan["icm_hit"] else 0,
-            "G1800 TRX for CDR": plan["n_cdr"],
-            "G1800 TRX for quality": plan["n_qual"],
-            "G1800 TRX for ICM": plan["n_icm"],
+            "CDR line": plan["n_cdr"],
+            "Quality line": plan["n_qual"],
+            "ICM line": plan["n_icm"],
+            "G1800 TRX for problem lines": plan["n_problem"],
             "G900 removed for CDR": plan["removed_cdr"],
             "G900 removed for quality": plan["removed_qual"],
             "G900 removed for ICM": plan["removed_icm"],
@@ -1250,8 +1287,8 @@ def build(records, table):
         ("Cell Name", 16, cell_text), ("TRX now", 11, cell_int), ("G900 TRX final", 14, cell_int),
         ("G900 removed", 13, cell_int), ("Voice Load, %", 14, cell_num),
         ("Voice Load after reduction, %", 18, cell_num), ("G1800 for load", 14, cell_int),
-        ("G1800 for CDR", 14, cell_int), ("G1800 for quality", 16, cell_int),
-        ("G1800 for ICM", 14, cell_int), ("G1800 TRX Add", 14, cell_int),
+        ("CDR line", 12, cell_int), ("Quality line", 14, cell_int), ("ICM line", 12, cell_int),
+        ("G1800 for problem lines", 18, cell_int), ("G1800 TRX Add", 14, cell_int),
         ("Capacity final, Erl", 16, cell_num), ("Voice Load final, %", 16, cell_num),
         ("CDR_N_Avg", 12, cell_num), ("DL Bad Qual(6~7), %", 16, cell_num),
         ("UL Bad Qual(6~7), %", 16, cell_num), ("ICM_B4~5, %", 13, cell_num),
@@ -1263,7 +1300,7 @@ def build(records, table):
         addition_rows.append([
             item["source"], item["gbsc"], item["ci"], item["name"], item["trx"], plan["trx_final"],
             plan["trx_remove"], blank(item["voice"]), blank(plan["voice_after"]), plan["n_load"],
-            plan["n_cdr"], plan["n_qual"], plan["n_icm"], plan["n_add"], plan["cap_final"],
+            plan["n_cdr"], plan["n_qual"], plan["n_icm"], plan["n_problem"], plan["n_add"], plan["cap_final"],
             blank(plan["voice_final"]), blank(item["cdr_n"]), blank(item["dl"]), blank(item["ul"]),
             blank(item["icm"]), "Yes" if plan["reduce"] else "No", item["reason_a"], item["notes"],
         ])
@@ -1271,7 +1308,7 @@ def build(records, table):
     addition_sheet.set_tab_color(blue)
     write_table(addition_sheet, addition_headers, addition_rows, header_blue)
     if addition_rows:
-        addition_sheet.conditional_format(1, 15, len(addition_rows), 15, {
+        addition_sheet.conditional_format(1, 16, len(addition_rows), 16, {
             "type": "cell", "criteria": ">=", "value": 60,
             "format": workbook.add_format({
                 "bg_color": pale_red, "font_name": "Calibri", "font_size": 10,
@@ -1289,7 +1326,7 @@ def build(records, table):
     summary.set_column("F:I", 16)
     summary.hide_gridlines(2)
     summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
-    summary.write("B2", f"{VERSION}. Rule v11. G900 TRX reduction is the first step. G1800 TRX addition is the second step. The v11 sheet has the gate table.", section_fmt)
+    summary.write("B2", f"{VERSION}. Rule v12. G900 TRX reduction is the first step. G1800 TRX addition is the second step. CDR, quality, and high ICM share one G1800 TRX.", section_fmt)
     summary.set_row(1, 32)
     summary.write(
         "B3",
@@ -1337,9 +1374,9 @@ def build(records, table):
         ("G900 cells that receive G1800 TRX", countifs(("G1800 Addition", '"Yes"'))),
         ("G1800 TRX to add", f"=SUM({sheet}!{letter['G1800 TRX Add']}${data_first}:{letter['G1800 TRX Add']}${data_last})"),
         ("Cells sized because voice load after the G900 step is at least 80%", countifs(("G1800 TRX for load", '">=1"'))),
-        ("Cells with daily CDR_N at least 10", countifs(("G1800 TRX for CDR", "1"))),
-        ("Cells with DL and UL bad quality above 2%", countifs(("G1800 TRX for quality", "1"))),
-        ("Cells with high ICM only", countifs(("G1800 TRX for ICM", "1"))),
+        ("Cells with daily CDR_N at least 10", countifs(("CDR line", "1"))),
+        ("Cells with DL and UL bad quality above 2%", countifs(("Quality line", "1"))),
+        ("Cells with high ICM only", countifs(("ICM line", "1"))),
         ("Extra G900 TRX removed outside the full reduction", sumifs("TRX Remove", ("G900 TRX Reduction", '"No"'))),
     ]
     for index, (label, formula) in enumerate(addition_formulas):
@@ -1391,8 +1428,8 @@ def build(records, table):
     note_row = total_row + 2
     summary.write(note_row, 1, "How to read the result", section_fmt)
     notes = [
-        "G900 TRX Reduction lists every G900 cell that meets the v11 gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Half Rate 5% sheet, with available TCH scaled by 2 / configured TRX.",
-        "G1800 Addition lists every G900 cell that receives one or more DCS1800 TRX. G1800 for load is the count that takes the pooled voice load under 60%. CDR and bad quality each add one more TRX. High ICM adds one only when nothing else triggered.",
+        "G900 TRX Reduction lists every G900 cell that meets the v12 gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Half Rate 5% sheet, with available TCH scaled by 2 / configured TRX.",
+        "G1800 Addition lists every G900 cell that receives one or more DCS1800 TRX. G1800 for load is the count that takes the pooled voice load under 60%. CDR, quality, and high ICM share one G1800 TRX. If the load count is already there, those lines add nothing more. If one shared TRX still leaves voice load at or above 60%, the problem-line count is the smallest number that goes under.",
         "A red voice-load-final cell is still at or above 60% after the TRX on that row. Capacity final is the remaining G900 Erlang plus the new G1800 Erlang.",
         "All Cells holds the live formulas. Gray columns are date averages. Capacity, Erl reads the 60% column of the Half Rate 5% sheet. Thresholds are on Parameters.",
         "The two action sheets stay at the thresholds saved with this file. Changing a yellow parameter recalculates All Cells and this Summary.",
@@ -1427,7 +1464,7 @@ def build(records, table):
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v11. Open the v11 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. Capacity is the 60% column of the Half Rate 5% sheet.",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v12. Open the v12 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. Capacity is the 60% column of the Half Rate 5% sheet.",
         "",
         "Capacity",
         "Capacity, Erl is the Offered Erl at 5% on the Half Rate 5% sheet, 60% half-rate column, for the physical TCH count. A fractional TCH is the straight line between the two nearest rows.",
@@ -1437,17 +1474,17 @@ def build(records, table):
         "10 physical TCH at full rate carry 6.22 Erl. The same 10 TCH at 60% half rate carry 11.54 Erl.",
         "",
         "1. G900 TRX reduction, first step",
-        "Configured TRX above 2. Busy-hour voice load at or below 40%. TCH congestion below 1%, and SDCCH congestion below 0.5%, unless busy-hour RR307 is below 95%. When RR307 is below 95%, both congestion checks are ignored. Busy-hour RR307 above 99% is not a gate. The gate table is on the v11 sheet.",
+        "Configured TRX above 2. Busy-hour voice load at or below 40%. TCH congestion below 1%, and SDCCH congestion below 0.5%, unless busy-hour RR307 is below 95%. When RR307 is below 95%, both congestion checks are ignored. Busy-hour RR307 above 99% is not a gate. The gate table is on the v12 sheet.",
         "The cell then keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, and voice load is recalculated from that.",
         "If 3 or more TRX are still there after this step, and the G1800 step is adding a TRX for CDR, bad quality, or high ICM, remove exactly 1 more G900 TRX. A cell already at 2 loses nothing more.",
         "",
         "2. G1800 TRX addition, second step",
         "Voice load for these lines is the load after the reduction. A cell that was not reduced uses its current load.",
-        "1. Load. If that voice load is at least 80%, add the smallest number of G1800 TRX that brings pooled voice load under 60%. Cap is 12 TRX.",
-        "2. CDR. If daily CDR_N average is at least 10, add 1 G1800 TRX.",
-        "3. Quality. If DL bad quality is above 2% and UL bad quality is above 2%, add 1 G1800 TRX.",
-        "4. High ICM. If ICM band 4-5 is above 50%, and the reduction, the 80% load line, CDR, and bad quality did not trigger, add 1 G1800 TRX.",
-        "The four G1800 counts are added. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX.",
+        "1. Load. If that voice load is at least 80%, add the smallest number of G1800 TRX that brings pooled voice load under 60%. Cap is 12 TRX. This is the capacity count.",
+        "2. CDR. Daily CDR_N average at least 10 is one problem line.",
+        "3. Quality. DL bad quality above 2% and UL bad quality above 2% is one problem line.",
+        "4. High ICM. ICM band 4-5 above 50% is one problem line, and only when the reduction, the load line, CDR, and quality did not trigger.",
+        "CDR, quality, and high ICM share one G1800 TRX. A second line does not add another TRX. If the load line already added TRX, these lines add nothing more. If the load line added nothing, add 1 G1800 TRX. If that 1 TRX still leaves voice load at or above 60%, add the smallest number that brings it under 60%.",
         "Actions apply to G900 cells. A cell that already has 1800 TCH is not given another G1800 plan by these rules.",
         "",
         "What did not change",
