@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Erlang B reference table at 5% blocking, for GSM TCH dimensioning.
+"""Erlang B reference tables at 5% and 2% blocking, for GSM TCH dimensioning.
 
 Offered traffic is the largest A (Erlang) such that the Erlang B blocking
-probability on N channels is 5%. Half-rate rows use equivalent channels
+probability on N channels is the sheet's blocking. Half-rate rows use
+equivalent channels
 
     N x (1 + half-rate traffic ratio)
 
-and read that channel count from the same 5% table. A fractional channel
-count is interpolated between the two nearest integer rows.
+and read that channel count from the matching Erlang B sheet. A fractional
+channel count is interpolated between the two nearest integer rows.
 
-The capacity workbook is not changed by this file.
+Erlang_B_Table_5pct_v1.xlsx stays as the first 5% file. This writer builds
+Erlang_B_Table_v2.xlsx with both blocking rates. The capacity workbook is
+not changed by this file. Capacity still reads the 5% half-rate column.
 """
 
 from math import ceil
@@ -18,9 +21,10 @@ from pathlib import Path
 import xlsxwriter
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "v1"
-OUT = ROOT / f"Erlang_B_Table_5pct_{VERSION}.xlsx"
+VERSION = "v2"
+OUT = ROOT / f"Erlang_B_Table_{VERSION}.xlsx"
 GOS = 0.05
+GOS_2 = 0.02
 MAX_CHANNELS = 120
 MAX_PHYSICAL = 60
 # Fractions keep 10 x (1 + 3/5) equal to 16 in Excel. A decimal 0.6 does not.
@@ -100,24 +104,26 @@ def offered_at(channels, table):
     return table[lower] + fraction * (table[lower + 1] - table[lower])
 
 
-def build_table():
+def build_table(gos):
     table = {}
     for channels in range(1, MAX_CHANNELS + 1):
-        traffic = offered_traffic(channels)
+        traffic = offered_traffic(channels, gos)
         blocking = erlang_b(channels, traffic)
-        if abs(blocking - GOS) > 1e-9:
-            raise SystemExit(f"N={channels} blocking {blocking} is not {GOS}")
+        if abs(blocking - gos) > 1e-9:
+            raise SystemExit(f"N={channels} blocking {blocking} is not {gos}")
         table[channels] = traffic
-    for channels, published in HUAWEI_PUBLISHED.items():
-        if abs(table[channels] - published) > 0.006:
-            raise SystemExit(
-                f"N={channels} is {table[channels]:.4f}, Huawei prints {published}"
-            )
+    if abs(gos - GOS) < 1e-12:
+        for channels, published in HUAWEI_PUBLISHED.items():
+            if abs(table[channels] - published) > 0.006:
+                raise SystemExit(
+                    f"N={channels} is {table[channels]:.4f}, Huawei prints {published}"
+                )
     return table
 
 
 def main():
-    table = build_table()
+    table = build_table(GOS)
+    table2 = build_table(GOS_2)
     workbook = xlsxwriter.Workbook(str(OUT), {"strings_to_urls": False})
     navy = "#1F4E79"
     header = workbook.add_format({
@@ -154,34 +160,43 @@ def main():
     })
     label = workbook.add_format({"font_name": "Calibri", "font_size": 11, "bold": True, "font_color": navy})
 
-    write_erlang_sheet(workbook, table, header, title, note, n_fmt, n_hi, erl, erl_hi, text, text_hi)
-    write_half_rate_sheet(workbook, table, header, header_hr, title, note, n_fmt, n_hi, erl, erl_hi, label)
+    write_erlang_sheet(workbook, table, "5%", "Erlang B 5%", header, title, note, n_fmt, n_hi, erl, erl_hi, text, text_hi)
+    write_half_rate_sheet(workbook, table, "5%", "Half Rate 5%", "Erlang B 5%", header, header_hr, title, note, n_fmt, n_hi, erl, erl_hi, label)
+    write_erlang_sheet(workbook, table2, "2%", "Erlang B 2%", header, title, note, n_fmt, n_hi, erl, erl_hi, text, text_hi)
+    write_half_rate_sheet(workbook, table2, "2%", "Half Rate 2%", "Erlang B 2%", header, header_hr, title, note, n_fmt, n_hi, erl, erl_hi, label)
     write_trx_sheet(workbook, table, header, title, note, n_fmt, erl, text, label)
-    write_readme(workbook, table, title, section, note)
+    write_readme(workbook, table, table2, title, section, note)
     workbook.close()
     print(OUT.name)
     print(f"10 TCH full rate at 5% = {table[10]:.2f} Erl")
     print(f"16 channels (10 TCH, 60% HR) at 5% = {table[16]:.2f} Erl")
-    print(f"14 TCH at 5% = {table[14]:.2f} Erl")
-    print(f"21 TCH at 5% = {table[21]:.2f} Erl")
+    print(f"10 TCH full rate at 2% = {table2[10]:.2f} Erl")
+    print(f"16 channels (10 TCH, 60% HR) at 2% = {table2[16]:.2f} Erl")
+    print(f"14 TCH at 2% = {table2[14]:.2f} Erl")
+    print(f"21 TCH at 2% = {table2[21]:.2f} Erl")
 
 
-def write_erlang_sheet(workbook, table, header, title, note, n_fmt, n_hi, erl, erl_hi, text, text_hi):
-    sheet = workbook.add_worksheet("Erlang B 5%")
-    sheet.set_tab_color("#1F4E79")
+def write_erlang_sheet(workbook, table, pct, sheet_name, header, title, note, n_fmt, n_hi, erl, erl_hi, text, text_hi):
+    sheet = workbook.add_worksheet(sheet_name)
+    sheet.set_tab_color("#1F4E79" if pct == "5%" else "#2F5496")
     sheet.freeze_panes(5, 1)
     sheet.set_column("A:A", 16)
     sheet.set_column("B:B", 28)
     sheet.set_column("C:C", 18)
     sheet.set_column("D:D", 62)
-    sheet.write("A1", f"Erlang B table at 5% blocking  {VERSION}", title)
-    sheet.write("A2", "Offered traffic is the Erlang a cell can be offered when 5% of calls are blocked. "
-                "Huawei's capacity course prints this as the 5 column. A dense area in that course is usually designed at 2%; this workbook uses 5%, as requested.", note)
-    sheet.write("A3", "B(N, A) = (A^N / N!) / sum(A^k / k! for k = 0 to N) = 5%. A is offered traffic. N is the number of channels.", note)
+    sheet.write("A1", f"Erlang B table at {pct} blocking  {VERSION}", title)
+    if pct == "5%":
+        intro = ("Offered traffic is the Erlang a cell can be offered when 5% of calls are blocked. "
+                 "Huawei's capacity course prints this as the 5 column. The 2% table is on Erlang B 2% and Half Rate 2%.")
+    else:
+        intro = ("Offered traffic is the Erlang a cell can be offered when 2% of calls are blocked. "
+                 "Huawei's capacity course uses 2% for a dense area. The 5% table stays on Erlang B 5% and Half Rate 5%.")
+    sheet.write("A2", intro, note)
+    sheet.write("A3", f"B(N, A) = (A^N / N!) / sum(A^k / k! for k = 0 to N) = {pct}. A is offered traffic. N is the number of channels.", note)
     sheet.set_row(1, 32)
     sheet.set_row(2, 32)
     sheet.set_row(4, 30)
-    headers = ["Channels N", "Offered traffic at 5%, Erl", "Erl per channel", "Where this channel count is used"]
+    headers = ["Channels N", f"Offered traffic at {pct}, Erl", "Erl per channel", "Where this channel count is used"]
     for col, name in enumerate(headers):
         sheet.write(4, col, name, header)
     sheet.autofilter(4, 0, 4 + MAX_CHANNELS, 3)
@@ -198,20 +213,20 @@ def write_erlang_sheet(workbook, table, header, title, note, n_fmt, n_hi, erl, e
     sheet.repeat_rows(4)
     sheet.set_landscape()
     sheet.fit_to_pages(1, 0)
-    sheet.set_header("&LErlang B 5%&R" + VERSION)
+    sheet.set_header(f"&LErlang B {pct}&R" + VERSION)
     sheet.set_footer("&LChannels 1 to 120&RPage &P")
 
 
-def write_half_rate_sheet(workbook, table, header, header_hr, title, note, n_fmt, n_hi, erl, erl_hi, label):
-    sheet = workbook.add_worksheet("Half Rate 5%")
-    sheet.set_tab_color("#C65911")
+def write_half_rate_sheet(workbook, table, pct, sheet_name, source_sheet, header, header_hr, title, note, n_fmt, n_hi, erl, erl_hi, label):
+    sheet = workbook.add_worksheet(sheet_name)
+    sheet.set_tab_color("#C65911" if pct == "5%" else "#833C0C")
     sheet.freeze_panes(6, 1)
     sheet.set_column("A:A", 16)
-    sheet.write("A1", "Half-rate capacity read from the 5% Erlang B table", title)
+    sheet.write("A1", f"Half-rate capacity read from the {pct} Erlang B table", title)
     sheet.write("A2", "Equivalent channels = physical TCH x (1 + half-rate traffic ratio). "
                 "Half-rate traffic ratio = TCHH traffic / TCH traffic = K3034 / K3014. "
                 "One physical TCH used as half rate carries two calls, so 60% half rate on 10 TCH is 16 channels.", note)
-    sheet.write("A3", "Offered Erlang is looked up on Erlang B 5%. A value between two channel counts is a straight-line interpolation of those two rows.", note)
+    sheet.write("A3", f"Offered Erlang is looked up on {source_sheet}. A value between two channel counts is a straight-line interpolation of those two rows.", note)
     sheet.set_row(1, 36)
     sheet.set_row(2, 32)
     sheet.set_row(4, 22)
@@ -224,7 +239,7 @@ def write_half_rate_sheet(workbook, table, header, header_hr, title, note, n_fmt
         group = header_hr if expr == "3/5" else header
         sheet.merge_range(4, col, 4, col + 1, ratio_label, group)
         sheet.write(5, col, "Equivalent channels", group)
-        sheet.write(5, col + 1, "Offered Erl at 5%", group)
+        sheet.write(5, col + 1, f"Offered Erl at {pct}", group)
     first_data = 6
     for physical in range(1, MAX_PHYSICAL + 1):
         row = first_data + physical - 1
@@ -244,7 +259,7 @@ def write_half_rate_sheet(workbook, table, header, header_hr, title, note, n_fmt
             )
             sheet.write_formula(
                 row, col + 1,
-                lookup_formula(equiv_cell),
+                lookup_formula(equiv_cell, source_sheet),
                 erl_hi if highlight else erl,
                 offered_at(equivalent, table),
             )
@@ -253,24 +268,24 @@ def write_half_rate_sheet(workbook, table, header, header_hr, title, note, n_fmt
     sheet.set_column(example_col, example_col, 42)
     sheet.set_column(example_col + 1, example_col + 1, 14)
     sheet.write(4, example_col, "10 TCH example", label)
-    sheet.write(5, example_col, "Full rate, offered Erl at 5%", note)
+    sheet.write(5, example_col, f"Full rate, offered Erl at {pct}", note)
     sheet.write_formula(5, example_col + 1, "=C16", erl, table[10])
     sheet.write(6, example_col, "60% half rate, equivalent channels", note)
     sheet.write_formula(6, example_col + 1, "=J16", erl, 16)
-    sheet.write(7, example_col, "60% half rate, offered Erl at 5%", note)
+    sheet.write(7, example_col, f"60% half rate, offered Erl at {pct}", note)
     sheet.write_formula(7, example_col + 1, "=K16", erl, table[16])
-    sheet.write(9, example_col, "Row 16 is 10 physical TCH. Full rate is 6.22 Erl. "
-                "At 60% half rate those 10 TCH are 16 channels and carry 11.54 Erl at 5% blocking.", note)
+    sheet.write(9, example_col, f"Row 16 is 10 physical TCH. Full rate is {table[10]:.2f} Erl. "
+                f"At 60% half rate those 10 TCH are 16 channels and carry {table[16]:.2f} Erl at {pct} blocking.", note)
     sheet.repeat_rows(4, 5)
     sheet.set_landscape()
     sheet.fit_to_pages(1, 0)
-    sheet.set_header("&LHalf rate at 5% blocking&R" + VERSION)
+    sheet.set_header(f"&LHalf rate at {pct} blocking&R" + VERSION)
 
 
-def lookup_formula(equiv_cell):
+def lookup_formula(equiv_cell, source_sheet):
     """INDEX/MATCH interpolation. Avoids functions that show #NAME? in older spreadsheets."""
-    channels = "'Erlang B 5%'!$A$6:$A$125"
-    offered = "'Erlang B 5%'!$B$6:$B$125"
+    channels = f"'{source_sheet}'!$A$6:$A$125"
+    offered = f"'{source_sheet}'!$B$6:$B$125"
     lower = f"INT({equiv_cell})"
     exact = (
         f"INDEX({offered},MATCH({equiv_cell},{channels},0))"
@@ -316,11 +331,11 @@ def write_trx_sheet(workbook, table, header, title, note, n_fmt, erl, text, labe
         sheet.write_number(row, 2, 1, n_fmt)
         sheet.write_number(row, 3, sdcch, n_fmt)
         sheet.write_formula(row, 4, f"=B{excel_row}-C{excel_row}-D{excel_row}", n_fmt, tch)
-        sheet.write_formula(row, 5, lookup_formula(f"E{excel_row}"), erl, table[tch])
+        sheet.write_formula(row, 5, lookup_formula(f"E{excel_row}", "Erlang B 5%"), erl, table[tch])
         sheet.write_formula(row, 6, f"=E{excel_row}*8/5", erl, tch * 1.6)
-        sheet.write_formula(row, 7, lookup_formula(f"G{excel_row}"), erl, offered_at(tch * 1.6, table))
+        sheet.write_formula(row, 7, lookup_formula(f"G{excel_row}", "Erlang B 5%"), erl, offered_at(tch * 1.6, table))
         sheet.write_formula(row, 8, f"=E{excel_row}*2", erl, tch * 2)
-        sheet.write_formula(row, 9, lookup_formula(f"I{excel_row}"), erl, table[tch * 2])
+        sheet.write_formula(row, 9, lookup_formula(f"I{excel_row}", "Erlang B 5%"), erl, table[tch * 2])
         sheet.write(row, 10, f"{tch} TCH. Full rate {table[tch]:.2f} Erl at 5%.", text)
     sheet.write("A15", "Worked Huawei rows on the 5% column", label)
     sheet.write("A16", "14 TCH (2 TRX) = 9.73 Erl. 21 TCH (3 TRX) = 16.19 Erl. "
@@ -331,21 +346,22 @@ def write_trx_sheet(workbook, table, header, title, note, n_fmt, erl, text, labe
     sheet.fit_to_pages(1, 1)
 
 
-def write_readme(workbook, table, title, section, note):
+def write_readme(workbook, table, table2, title, section, note):
     sheet = workbook.add_worksheet("How to read")
     sheet.set_tab_color("#833C0C")
     sheet.set_column("A:A", 28)
     sheet.set_column("B:B", 110)
-    sheet.write("A1", f"How to use Erlang_B_Table_5pct_{VERSION}.xlsx", title)
+    sheet.write("A1", f"How to use Erlang_B_Table_{VERSION}.xlsx", title)
     rows = [
-        ("Blocking used", "5% of offered calls are blocked. This is the Erlang B 5 column."),
+        ("Two blocking rates", "Erlang B 5% and Half Rate 5% are the 5% tables. Erlang B 2% and Half Rate 2% are the same layout at 2% blocking."),
         ("What the number means", "Offered traffic in Erlang. It is the design capacity of that many channels, not the carried traffic already on the cell."),
-        ("Erlang B 5% sheet", "One row per channel count, from 1 to 120. Yellow rows are the Huawei TRX counts and the 10 TCH / 16 channel examples."),
-        ("10 TCH, full rate", f"{table[10]:.2f} Erl at 5% blocking."),
-        ("10 TCH, 60% half rate", f"Equivalent channels = 10 x 1.6 = 16. Offered traffic at 5% is {table[16]:.2f} Erl."),
-        ("Half-rate rule", "Equivalent channels = physical TCH x (1 + K3034 / K3014). The offered Erlang is then read from the 5% table. Half rate does not multiply the Erlang by 1.6."),
-        ("Huawei check", "14 TCH = 9.73 Erl, 21 TCH = 16.19 Erl, 29 TCH = 23.83 Erl, 36 TCH = 30.66 Erl. Same 5% column as the Huawei capacity course."),
-        ("This file and v7", "GSM_Capacity_Enhancement_v7.xlsx is unchanged. Its voice-load capacity is still Available TCH x (1 + half-rate ratio). This table is the 5% Erlang B reference for the next capacity-rule change."),
+        ("Erlang B sheets", "One row per channel count, from 1 to 120. Yellow rows are the Huawei TRX counts and the 10 TCH / 16 channel examples."),
+        ("10 TCH at 5%", f"Full rate {table[10]:.2f} Erl. At 60% half rate, 16 channels carry {table[16]:.2f} Erl."),
+        ("10 TCH at 2%", f"Full rate {table2[10]:.2f} Erl. At 60% half rate, 16 channels carry {table2[16]:.2f} Erl."),
+        ("Half-rate rule", "Equivalent channels = physical TCH x (1 + K3034 / K3014). The offered Erlang is then read from the matching blocking sheet. Half rate does not multiply the Erlang by 1.6."),
+        ("Huawei 5% check", "14 TCH = 9.73 Erl, 21 TCH = 16.19 Erl, 29 TCH = 23.83 Erl, 36 TCH = 30.66 Erl. Same 5% column as the Huawei capacity course."),
+        ("Huawei 2% column", f"14 TCH = {table2[14]:.2f} Erl, 21 TCH = {table2[21]:.2f} Erl, 29 TCH = {table2[29]:.2f} Erl, 36 TCH = {table2[36]:.2f} Erl."),
+        ("Capacity file", "GSM_Capacity_Enhancement_v14.xlsx still reads Offered Erl at 5% from the 60% column. This 2% table is the reference beside it. Erlang_B_Table_5pct_v1.xlsx stays unchanged."),
     ]
     sheet.write("A3", "Item", section)
     sheet.write("B3", "Rule", section)
