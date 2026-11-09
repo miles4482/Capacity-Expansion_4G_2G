@@ -33,12 +33,11 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v9"
-# Rule1 v1 in GSM_Rules_Store_v1.xlsx is this workbook's rule set.
-# A later rule change keeps that store file and writes the next store version.
-ACTIVE_RULE = "Rule1"
-ACTIVE_RULE_VERSION = "v1"
-ACTIVE_RULE_FILE = "GSM_Rules_Store_v1.xlsx"
+VERSION = "v10"
+# Rule v9 is the decision in this file. The Store sheet lists rule v1 onward
+# beside each capacity file version. GSM_Rules_Store_v2.xlsx is the same store.
+ACTIVE_RULE = "v9"
+ACTIVE_RULE_FILE = "GSM_Rules_Store_v2.xlsx"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
@@ -1226,7 +1225,8 @@ def build(records, table):
     summary.set_column("F:I", 16)
     summary.hide_gridlines(2)
     summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
-    summary.write("B2", f"{VERSION}. G900 TRX reduction to 2 TRX, and G1800 TRX sized from the 5% Erlang B table at 60% half rate.", section_fmt)
+    summary.write("B2", f"{VERSION}. Rule v9. G900 TRX reduction to 2 TRX, and G1800 TRX sized from the 5% Erlang B table at 60% half rate. The Store sheet lists every rule version beside its capacity file.", section_fmt)
+    summary.set_row(1, 32)
     summary.write(
         "B3",
         "Capacity Erlang is the 5% Erlang B offered traffic of available TCH x 1.60. "
@@ -1363,7 +1363,7 @@ def build(records, table):
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Earlier version files are kept. v7 still uses available TCH x (1 + measured half-rate ratio). v8 could remove a second G900 TRX when both CDR and bad quality were true. v9 removes only one extra G900 TRX, and only when the reduction step left 3 or more TRX.",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v9, the same decision as capacity v9. The Store sheet keeps rule v1 through v9, and the next column is the capacity file version. v7 still uses available TCH x (1 + measured half-rate ratio). v8 could remove a second G900 TRX when both CDR and bad quality were true. Rule v9 removes only one extra G900 TRX, and only when the reduction step left 3 or more TRX.",
         "",
         "Capacity",
         "Capacity, Erl is the Erlang B offered traffic at 5% blocking. The channel count is Available TCHs_K3015_Avg x (1 + 0.60). The 0.60 is pHR, the design half-rate ratio.",
@@ -1407,9 +1407,15 @@ def build(records, table):
             rules.write(1 + index, 1, line, text_fmt)
             rules.set_row(1 + index, 18 + 14 * (len(line) // 160))
 
+    from build_gsm_rules import ACTIVE_CAPACITY, ACTIVE_RULE as STORE_RULE, add_rule_sheets
+    if STORE_RULE != ACTIVE_RULE or ACTIVE_CAPACITY != VERSION:
+        raise SystemExit(f"Rule store {STORE_RULE}/{ACTIVE_CAPACITY} does not match this workbook {ACTIVE_RULE}/{VERSION}")
+    rule_sheets = add_rule_sheets(workbook)
     order = [
-        "Summary", "G900 TRX Reduction", "G1800 Addition", "All Cells",
+        "Summary", "Store",
+        "G900 TRX Reduction", "G1800 Addition", "All Cells",
         "Erlang B 5%", "G1800 TRX Capacity", "Parameters", "Rules",
+        *[name for name in rule_sheets if name != "Store"],
     ]
     workbook.worksheets_objs.sort(key=lambda item: order.index(item.name))
     workbook.close()
