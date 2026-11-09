@@ -33,7 +33,7 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v8"
+VERSION = "v9"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
@@ -256,10 +256,14 @@ def decide(band, trx, voice, tch_cong, sdcch_cong, rr307, cdr_n, dl, ul, icm, ca
     n_qual = 1 if g900 and qual_hit else 0
     n_icm = 1 if g900 and (not reduce) and (not load_high) and (not cdr_hit) and (not qual_hit) and icm_hit else 0
 
-    removed_cdr = 1 if g900 and not reduce and cdr_hit and trx >= 3 else 0
-    removed_qual = 1 if g900 and not reduce and qual_hit and trx - removed_cdr >= 3 else 0
-    removed_icm = 1 if n_icm == 1 and trx - removed_cdr - removed_qual >= 3 else 0
-    removed = 0 if reduce else removed_cdr + removed_qual + removed_icm
+    # The extra removal is judged on the TRX left after the reduction step.
+    # It removes one G900 TRX, once, and only while 3 or more TRX are still there.
+    # CDR and bad quality can each add a G1800 TRX, but they do not each remove a G900 TRX.
+    still_three = (not reduce) and trx_after >= 3
+    removed_cdr = 1 if g900 and still_three and cdr_hit else 0
+    removed_qual = 1 if g900 and still_three and qual_hit and not cdr_hit else 0
+    removed_icm = 1 if n_icm == 1 and still_three else 0
+    removed = removed_cdr + removed_qual + removed_icm
     trx_final = trx_after if reduce else max(0, trx - removed)
     n_add = n_load + n_cdr + n_qual + n_icm
     if n_add > G1800_TABLE_TRX:
@@ -307,9 +311,10 @@ def self_check(table, caps):
         raise SystemExit(f"high load on 2 TRX failed: {hot}")
     if hot["n_load"] < G1800_MAX_TRX and not (hot["voice_final"] < cfg["pVoiceLoadTarget"]):
         raise SystemExit(f"G1800 add did not take load under 60%: {hot}")
-    # No full reduction. CDR and bad quality each add 1 G1800 and, together, remove 2 G900 because 4 TRX allows it.
+    # No full reduction. Four TRX are still there, so one more G900 TRX comes off, not two.
+    # CDR and bad quality each still add their own G1800 TRX.
     both = decide("G900", 4, 50, 0.2, 0.2, 100, 12, 3, 3, 80, 8, 30, table, caps, cfg)
-    if both["reduce"] or both["n_cdr"] != 1 or both["n_qual"] != 1 or both["n_icm"] != 0 or both["trx_final"] != 2:
+    if both["reduce"] or both["n_cdr"] != 1 or both["n_qual"] != 1 or both["n_icm"] != 0 or both["trx_final"] != 3 or both["trx_remove"] != 1:
         raise SystemExit(f"CDR and quality path failed: {both}")
     # ICM only when the other lines are quiet. 4 TRX loses 1.
     icm_only = decide("G900", 4, 20, 0.2, 0.2, 98, 1, 0.2, 0.2, 70, 3, 30, table, caps, cfg)
@@ -492,7 +497,7 @@ def prepare(bh_cells, daily_cells, table, caps, cfg):
         if plan["n_icm"]:
             reasons_a.append(f"ICM band 4-5>{cfg['pICMMin']}% and no other trigger, add 1 G1800 TRX")
         if plan["trx_remove"] and not reduce:
-            reasons_a.append(f"G900 TRX reduced by {plan['trx_remove']} because TRX stayed at or above 3")
+            reasons_a.append("After the G900 step at least 3 TRX remain, so 1 more G900 TRX is removed with the G1800 add")
         elif add and reduce:
             reasons_a.append("G900 already reduced to the keep value, so it is not reduced further")
 
@@ -954,13 +959,15 @@ def build(records, table):
                 f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F Load after>=80")}<>1,'
                 f'{F("F CDR_N>=10")}<>1,{F("F DL and UL>2")}<>1,{F("F High ICM")}=1),1,0)'
             ),
-            "G900 removed for CDR": f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F CDR_N>=10")}=1,{F("TRX Configured")}>=3),1,0)',
+            "G900 removed for CDR": (
+                f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("TRX after reduction")}>=3,{F("F CDR_N>=10")}=1),1,0)'
+            ),
             "G900 removed for quality": (
-                f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("F DL and UL>2")}=1,'
-                f'{F("TRX Configured")}-{F("G900 removed for CDR")}>=3),1,0)'
+                f'=IF(AND({F("Band")}="G900",{F("G900 TRX Reduction")}<>"Yes",{F("TRX after reduction")}>=3,'
+                f'{F("F DL and UL>2")}=1,{F("F CDR_N>=10")}<>1),1,0)'
             ),
             "G900 removed for ICM": (
-                f'=IF(AND({F("G1800 TRX for ICM")}=1,{F("TRX Configured")}-{F("G900 removed for CDR")}-{F("G900 removed for quality")}>=3),1,0)'
+                f'=IF(AND({F("G1800 TRX for ICM")}=1,{F("TRX after reduction")}>=3),1,0)'
             ),
             "G900 TRX final": (
                 f'=IF({F("G900 TRX Reduction")}="Yes",MIN(pTRXKeep,{F("TRX Configured")}),'
@@ -985,7 +992,7 @@ def build(records, table):
                 f'&IF({F("G1800 TRX for CDR")}>0,"; Daily CDR_N>="&pCDRnMin&", add 1 G1800 TRX","")'
                 f'&IF({F("G1800 TRX for quality")}>0,"; DL and UL bad quality>"&pBadQualMin&"%, add 1 G1800 TRX","")'
                 f'&IF({F("G1800 TRX for ICM")}>0,"; ICM band 4-5>"&pICMMin&"% and no other trigger, add 1 G1800 TRX","")'
-                f'&IF(AND({F("TRX Remove")}>0,{F("G900 TRX Reduction")}<>"Yes"),"; G900 TRX reduced by "&{F("TRX Remove")}&" because TRX stayed at or above 3","")'
+                f'&IF(AND({F("TRX Remove")}>0,{F("G900 TRX Reduction")}<>"Yes"),"; After the G900 step at least 3 TRX remain, so 1 more G900 TRX is removed with the G1800 add","")'
                 f'&IF(AND({F("G1800 TRX Add")}>0,{F("G900 TRX Reduction")}="Yes"),"; G900 already reduced to the keep value, so it is not reduced further","")'
                 f',3,500))'
             ),
@@ -1351,7 +1358,7 @@ def build(records, table):
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Earlier version files are kept. v7 still uses available TCH x (1 + measured half-rate ratio).",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Earlier version files are kept. v7 still uses available TCH x (1 + measured half-rate ratio). v8 could remove a second G900 TRX when both CDR and bad quality were true. v9 removes only one extra G900 TRX, and only when the reduction step left 3 or more TRX.",
         "",
         "Capacity",
         "Capacity, Erl is the Erlang B offered traffic at 5% blocking. The channel count is Available TCHs_K3015_Avg x (1 + 0.60). The 0.60 is pHR, the design half-rate ratio.",
@@ -1369,9 +1376,9 @@ def build(records, table):
         "G1800 TRX",
         "The G1800 count is worked out after the reduction step. If the cell was not reduced, the voice load used here is the current voice load.",
         "1. If that voice load is at least 80%, add the smallest number of G1800 TRX that takes pooled voice load under 60%. Pooled capacity is the remaining G900 Erlang plus the new G1800 Erlang. The G1800 TCH count is 8 x TRX - 1 BCCH - one SDCCH per two TRX, then x 1.60, then the 5% table. The load rule stops at 12 TRX.",
-        "2. If daily CDR_N_Avg is at least 10, add 1 G1800 TRX. If the cell was already reduced to 2, do not remove more G900. Otherwise remove 1 G900 TRX when at least 3 G900 TRX remain.",
-        "3. If DL bad quality is above 2% and UL bad quality is above 2%, add 1 G1800 TRX and apply the same G900 removal rule. A cell that already lost one TRX on the CDR line loses a second only when 3 or more TRX still remain.",
-        "4. High ICM means ICM band 4-5 above 50%. pICMMin holds that percent. This line runs only when the reduction, the 80% load line, CDR, and bad quality did not trigger. It adds 1 G1800 TRX, then removes 1 G900 TRX when at least 3 remain.",
+        "2. If daily CDR_N_Avg is at least 10, add 1 G1800 TRX. The extra G900 removal is decided after the reduction step. If that step already left 2 TRX, no further G900 TRX is removed. If 3 or more TRX are still there, remove 1 G900 TRX.",
+        "3. If DL bad quality is above 2% and UL bad quality is above 2%, add 1 G1800 TRX. This line does not remove a second G900 TRX. The one extra G900 removal is shared with the CDR line.",
+        "4. High ICM means ICM band 4-5 above 50%. pICMMin holds that percent. This line runs only when the reduction, the 80% load line, CDR, and bad quality did not trigger. It adds 1 G1800 TRX and removes 1 G900 TRX when the reduction step left 3 or more TRX.",
         "The four G1800 counts are added together. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX.",
         "Actions apply to G900 cells. A cell that already has 1800 TCH is not given another G1800 plan by these rules.",
         "",
