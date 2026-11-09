@@ -33,11 +33,12 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v11"
-# Rule v9 is the decision in this file. Each section has two rules.
-# GSM_Rules_Store_v3.xlsx is the same store, with the capacity version beside each rule.
+VERSION = "v12"
+# Rule v9 is the decision in this file.
+# Each version sheet is G900 reduction first, then G1800 addition.
+# GSM_Rules_Store_v4.xlsx is the same store.
 ACTIVE_RULE = "v9"
-ACTIVE_RULE_FILE = "GSM_Rules_Store_v3.xlsx"
+ACTIVE_RULE_FILE = "GSM_Rules_Store_v4.xlsx"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
@@ -1225,7 +1226,7 @@ def build(records, table):
     summary.set_column("F:I", 16)
     summary.hide_gridlines(2)
     summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
-    summary.write("B2", f"{VERSION}. Rule v9. Two rules under G900 TRX reductions, and two rules under G1800 TRX additions. The Store sheet lists each rule beside its capacity file version.", section_fmt)
+    summary.write("B2", f"{VERSION}. Rule v9. G900 TRX reduction is the first step. G1800 TRX addition is the second step. The v9 sheet has the gate table.", section_fmt)
     summary.set_row(1, 32)
     summary.write(
         "B3",
@@ -1363,7 +1364,7 @@ def build(records, table):
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v9, the same decision as capacity v9 and v10. The Store sheet keeps rule v1 through v9. Each version has two sections, and each section has two rules. The capacity file version sits beside the rule.",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v9, the same decision as capacity v9, v10, and v11. Open the v9 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. The Store sheet lists each rule version beside its capacity file.",
         "",
         "Capacity",
         "Capacity, Erl is the Erlang B offered traffic at 5% blocking. The channel count is Available TCHs_K3015_Avg x (1 + 0.60). The 0.60 is pHR, the design half-rate ratio.",
@@ -1372,13 +1373,18 @@ def build(records, table):
         "The Erlang B 5% sheet is the lookup. A channel count between two rows is read on the straight line between those rows. G1800 TRX Capacity is the same table applied to a new DCS1800 cell.",
         "10 channels at 5% carry 6.22 Erl. 16 channels, 10 TCH at 60% half rate, carry 11.54 Erl.",
         "",
-        "1. G900 TRX reductions",
-        "Rule 1. All five are required: configured TRX above 2, TCH congestion below 1%, SDCCH congestion below 0.5%, busy-hour voice load at or below 40%, and busy-hour RR307 above 99%. The cell keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, then the 5% Erlang B table.",
-        "Rule 2. After Rule 1, look at the TRX still there. Already at 2: remove nothing more. Still 3 or more, and CDR, bad quality, or the ICM line is true: remove exactly 1 G900 TRX. CDR and bad quality share that one removal.",
+        "1. G900 TRX reduction, first step",
+        "All five must be true. Configured TRX above 2. TCH congestion below 1%. SDCCH congestion below 0.5%. Busy-hour voice load at or below 40%. Busy-hour RR307 above 99%. The gate table is on the v9 sheet.",
+        "The cell then keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, and voice load is recalculated from that.",
+        "If 3 or more TRX are still there after this step, and the G1800 step is adding a TRX for CDR, bad quality, or high ICM, remove exactly 1 more G900 TRX. A cell already at 2 loses nothing more.",
         "",
-        "2. G1800 TRX additions",
-        "Rule 1. After the G900 step, if voice load is at least 80%, add the smallest number of G1800 TRX that takes pooled voice load under 60%. The cap is 12. Pooled capacity is the remaining G900 Erlang plus the new G1800 Erlang. New G1800 TCH = 8 x TRX - 1 BCCH - one SDCCH per two TRX, then x 1.60, then the 5% table.",
-        "Rule 2. Daily CDR_N average at least 10 adds 1 G1800 TRX. DL and UL bad quality both above 2% add 1 G1800 TRX. ICM band 4-5 above 50% adds 1 G1800 TRX only when the G900 reduction, the 80% load rule, CDR, and bad quality did not trigger. These counts are added to Rule 1.",
+        "2. G1800 TRX addition, second step",
+        "Voice load for these lines is the load after the reduction. A cell that was not reduced uses its current load.",
+        "1. Load. If that voice load is at least 80%, add the smallest number of G1800 TRX that brings pooled voice load under 60%. Cap is 12 TRX.",
+        "2. CDR. If daily CDR_N average is at least 10, add 1 G1800 TRX.",
+        "3. Quality. If DL bad quality is above 2% and UL bad quality is above 2%, add 1 G1800 TRX.",
+        "4. High ICM. If ICM band 4-5 is above 50%, and the reduction, the 80% load line, CDR, and bad quality did not trigger, add 1 G1800 TRX.",
+        "The four G1800 counts are added. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX.",
         "Actions apply to G900 cells. A cell that already has 1800 TCH is not given another G1800 plan by these rules.",
         "",
         "What did not change",
@@ -1390,7 +1396,7 @@ def build(records, table):
     ]
     rules.write("B1", f"Rules applied in this workbook ({VERSION})", title_fmt)
     headings = {
-        "Version", "Capacity", "1. G900 TRX reductions", "2. G1800 TRX additions", "What did not change", "What this file does not do",
+        "Version", "Capacity", "1. G900 TRX reduction, first step", "2. G1800 TRX addition, second step", "What did not change", "What this file does not do",
     }
     for index, line in enumerate(rule_lines):
         if line in headings:

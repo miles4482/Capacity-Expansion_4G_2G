@@ -3,20 +3,20 @@
 
 Rule versions are v1, v2, v3, and so on. Each one sits beside the capacity
 file version that used it. GSM_Rules_Store_v1.xlsx stays as the first store.
-This writer builds GSM_Rules_Store_v3.xlsx and can add the same sheets to a
-capacity workbook. Each version has two rules under G900 TRX reductions and
-two rules under G1800 TRX additions.
+This writer builds GSM_Rules_Store_v4.xlsx and can add the same sheets to a
+capacity workbook. Each version sheet is the first step, G900 reduction,
+then the second step, G1800 addition.
 """
 
 import xlsxwriter
 
-STORE_VERSION = "v3"
+STORE_VERSION = "v4"
 STORE_FILE = f"GSM_Rules_Store_{STORE_VERSION}.xlsx"
 ACTIVE_RULE = "v9"
-ACTIVE_CAPACITY = "v11"
+ACTIVE_CAPACITY = "v12"
 SAVED = "9 Nov 2026"
-G900 = "1. G900 TRX reductions"
-G1800 = "2. G1800 TRX additions"
+G900_STEP = "1. G900 TRX reduction, first step"
+G1800_STEP = "2. G1800 TRX addition, second step"
 
 NAVY = "#1F4E79"
 ORANGE = "#C65911"
@@ -30,59 +30,82 @@ def capacity_file(version):
     return f"GSM_Capacity_Enhancement_{version}.xlsx"
 
 
-G900_OLD_1 = (
-    "The cell is G900, configured TRX is above 2, SDCCH congestion is below 1%, and TCH congestion is below 1%. All four are required."
-)
-G900_OLD_2 = (
-    "Any one of these is also required: busy-hour voice load at or below 60%, daily CDR_N average at least 10, or both DL and UL bad quality above 2%. "
-    "The cell then keeps 2 TRX. This version has no further G900 removal after that."
-)
-G1800_OLD_1 = (
-    "Busy-hour voice load at least 70% proposes one G1800 cell on that G900 cell. This rule does not choose how many G1800 TRX."
-)
-G1800_OLD_2 = (
-    "A G1800 cell is also proposed when any one of these is true: HOSR_Out at or below 90%, both DL and UL bad quality above 2%, "
-    "daily CDR_N average at least 10, or CDR above 0.2% and ICM band 4-5 above 50%. TRX count is not a filter. A cell that already has 1800 TCH is left off the list."
-)
-G900_NEW_1 = (
-    "All five are required: configured TRX above 2, TCH congestion below 1%, SDCCH congestion below 0.5%, busy-hour voice load at or below 40%, and busy-hour RR307 above 99%. "
-    "The cell keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, then Erlang B at 5% with the 60% design half rate."
-)
-G900_V8_2 = (
-    "After Rule 1, a cell already at 2 TRX loses nothing more. If it was not reduced and at least 3 TRX remain, CDR removes 1 G900 TRX, and bad quality can remove a second while at least 3 still remain."
-)
-G900_V9_2 = (
-    "After Rule 1, look at the TRX still there. Already at 2: remove nothing more. Still 3 or more, and CDR, bad quality, or the ICM line is true: remove exactly 1 G900 TRX. CDR and bad quality share that one removal."
-)
-G1800_NEW_1 = (
-    "After the G900 step, if voice load is at least 80%, add the smallest number of G1800 TRX that takes pooled voice load under 60%. The cap is 12. "
-    "Pooled capacity is the remaining G900 Erlang plus the new G1800 Erlang. New G1800 TCH = 8 x TRX - 1 BCCH - one SDCCH per two TRX, then x 1.60, then the 5% table."
-)
-G1800_NEW_2 = (
-    "Daily CDR_N average at least 10 adds 1 G1800 TRX. DL and UL bad quality both above 2% add 1 G1800 TRX. "
-    "ICM band 4-5 above 50% adds 1 G1800 TRX only when the G900 reduction, the 80% load rule, CDR, and bad quality did not trigger. These counts are added to Rule 1."
-)
+OLD_GATES = [
+    ("All of these are required.", [
+        ("Cell", "G900"),
+        ("Configured TRX", "above 2"),
+        ("SDCCH congestion", "below 1%"),
+        ("TCH congestion", "below 1%"),
+    ]),
+    ("Any one of these is also required.", [
+        ("Busy-hour voice load", "at or below 60%"),
+        ("Daily CDR_N", "at least 10"),
+        ("DL and UL bad quality", "both above 2%"),
+    ]),
+]
+OLD_AFTER = "The cell then keeps 2 TRX. Voice load after the cut = current voice load x configured TRX / 2. No further G900 TRX is removed after that."
+OLD_G1800 = [
+    "Load. Busy-hour voice load at least 70% proposes one G1800 cell. This line does not choose how many G1800 TRX.",
+    "HOSR. HOSR_Out at or below 90% proposes one G1800 cell.",
+    "Quality. Both DL and UL bad quality above 2% proposes one G1800 cell.",
+    "CDR. Daily CDR_N average at least 10 proposes one G1800 cell.",
+    "CDR and ICM. CDR above 0.2% and ICM band 4-5 above 50%, together, proposes one G1800 cell.",
+]
+OLD_CLOSE = "Any one of these proposes the cell. A cell that already has 1800 TCH is left off the list."
+NEW_GATES = [
+    ("All five must be true.", [
+        ("Configured TRX", "above 2"),
+        ("TCH congestion", "below 1%"),
+        ("SDCCH congestion", "below 0.5%"),
+        ("Busy-hour voice load", "at or below 40%"),
+        ("Busy-hour RR307", "above 99%"),
+    ]),
+]
+NEW_AFTER = "The cell then keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, and voice load is recalculated from that."
+V8_MORE = "If the cell was not reduced and at least 3 TRX remain, CDR removes 1 more G900 TRX, and bad quality can remove a second while at least 3 still remain. A cell already at 2 loses nothing more."
+V9_MORE = "If 3 or more TRX are still there after this step, and the G1800 step is adding a TRX for CDR, bad quality, or high ICM, remove exactly 1 more G900 TRX. A cell already at 2 loses nothing more."
+NEW_G1800_INTRO = "Voice load for these lines is the load after the reduction. A cell that was not reduced uses its current load."
+NEW_G1800 = [
+    "Load. If that voice load is at least 80%, add the smallest number of G1800 TRX that brings pooled voice load under 60%. Cap is 12 TRX. Pooled capacity is the remaining G900 Erlang plus the new G1800 Erlang. A new G1800 cell has TCH = 8 x TRX - 1 BCCH - one SDCCH per two TRX, then x 1.60, then the 5% table.",
+    "CDR. If daily CDR_N average is at least 10, add 1 G1800 TRX.",
+    "Quality. If DL bad quality is above 2% and UL bad quality is above 2%, add 1 G1800 TRX.",
+    "High ICM. If ICM band 4-5 is above 50%, and the reduction, the 80% load line, CDR, and bad quality did not trigger, add 1 G1800 TRX.",
+]
+NEW_CLOSE = "The four G1800 counts are added. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX."
+NEW_CAPACITY = "Capacity, Erl is Erlang B at 5% blocking. Equivalent channels = available TCH x (1 + 0.60). Voice load % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour."
 
+def rule_page(rule, capacity, note, gates, after, more, intro, lines, close, capacity_note):
+    return {
+        "rule": rule,
+        "capacity": capacity,
+        "note": note,
+        "gates": gates,
+        "after": after,
+        "more": more,
+        "intro": intro,
+        "lines": lines,
+        "close": close,
+        "capacity_note": capacity_note,
+    }
+
+
+OLD_MEASURED = "Capacity, Erl = available TCH x (1 + measured half-rate ratio). "
 RULES = [
-    ("v1", "v1", "Busy-hour K3014 is multiplied by 24. Capacity uses the measured half-rate ratio.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v2", "v2", "Same two rules as v1. Each KPI formula sits in the column after the result. Busy-hour K3014 is still multiplied by 24.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v3", "v3", "Same two rules in each section. Busy-hour K3014 is the one-hour value. Daily traffic x24 is reference only.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v4", "v4", "Same two rules as v3. The formula beside each KPI is written as text.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v5", "v5", "Same two rules as v3. Formula-text columns are removed. Each KPI keeps numerator, denominator, and result.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v6", "v6", "Same two rules as v3. Average headers use the counter with _avg.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v7", "v7", "Same two rules as v3. Headers are description, counter, then Avg. This file reduced 3,180 G900 cells and proposed 2,463 G1800 cells.", G900_OLD_1, G900_OLD_2, G1800_OLD_1, G1800_OLD_2),
-    ("v8", "v8", "Erlang B at 5% and a fixed 60% half rate. G900 Rule 2 can remove a second TRX. This file removed 3,618 G900 TRX and added 2,999 G1800 TRX.", G900_NEW_1, G900_V8_2, G1800_NEW_1, G1800_NEW_2),
-    ("v9", "v9", "Same G1800 rules as v8. G900 Rule 2 removes one TRX at most. Capacity v9, v10, and v11 use it. Removed G900 TRX is 3,608. G1800 TRX is 2,999.", G900_NEW_1, G900_V9_2, G1800_NEW_1, G1800_NEW_2),
+    rule_page("v1", "v1", "Busy-hour K3014 is multiplied by 24.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 multiplied by 24."),
+    rule_page("v2", "v2", "Same steps as v1. Each KPI formula sits in the column after the result. Busy-hour K3014 is still multiplied by 24.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 multiplied by 24."),
+    rule_page("v3", "v3", "Same steps as v1. Busy-hour K3014 is the one-hour value. Daily traffic x24 is reference only.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
+    rule_page("v4", "v4", "Same steps as v3. The formula beside each KPI is written as text.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
+    rule_page("v5", "v5", "Same steps as v3. Formula-text columns are removed. Each KPI keeps numerator, denominator, and result.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
+    rule_page("v6", "v6", "Same steps as v3. Average headers use the counter with _avg.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
+    rule_page("v7", "v7", "Same steps as v3. Headers are description, counter, then Avg. This file reduced 3,180 G900 cells and proposed 2,463 G1800 cells.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
+    rule_page("v8", "v8", "Erlang B at 5% and a fixed 60% half rate. The extra G900 removal can take a second TRX. This file removed 3,618 G900 TRX and added 2,999 G1800 TRX.", NEW_GATES, NEW_AFTER, V8_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
+    rule_page("v9", "v9", "Same G1800 step as v8. The extra G900 removal is one TRX. Capacity v9 through v12 use this page. Removed G900 TRX is 3,608. G1800 TRX is 2,999.", NEW_GATES, NEW_AFTER, V9_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
 ]
 
-CATALOG = [(rule, capacity, "Kept", note) for rule, capacity, note, *_rest in RULES]
+CATALOG = [(item["rule"], item["capacity"], "Kept", item["note"]) for item in RULES]
 CATALOG.append(("v9", "v10", "Kept", "Same rule v9. First capacity file that carried the rule store."))
-CATALOG.append((
-    "v9",
-    ACTIVE_CAPACITY,
-    "Active",
-    "Active capacity file. Rule v9, with two rules under G900 TRX reductions and two rules under G1800 TRX additions.",
-))
+CATALOG.append(("v9", "v11", "Kept", "Same rule v9."))
+CATALOG.append(("v9", ACTIVE_CAPACITY, "Active", "Active capacity file. G900 reduction is the first step. G1800 addition is the second step."))
 
 
 def formats(workbook):
@@ -95,6 +118,7 @@ def formats(workbook):
         "open": workbook.add_format({**base, "text_wrap": True}),
         "center": workbook.add_format({**base, "border": 1, "align": "center", "text_wrap": True}),
         "name": workbook.add_format({**base, "border": 1, "bold": True, "font_color": NAVY, "align": "center"}),
+        "gate": workbook.add_format({**base, "border": 1, "bold": True, "font_color": NAVY}),
         "active": workbook.add_format({**base, "border": 1, "align": "center", "bg_color": PALE_GREEN, "bold": True}),
         "kept": workbook.add_format({**base, "border": 1, "align": "center", "bg_color": PALE_GRAY}),
         "int": workbook.add_format({**base, "border": 1, "align": "center", "num_format": "0"}),
@@ -109,112 +133,89 @@ def add_rule_sheets(workbook):
     for item in RULES:
         write_rule(workbook, fmt, item)
     write_examples(workbook, fmt)
-    return ["Store", *[item[0] for item in RULES], "Examples"]
-
-
-def write_section_table(sheet, fmt, start_row, section, pairs):
-    sheet.merge_range(start_row, 0, start_row, 4, section, fmt["section"])
-    headers = ["Rule", "Capacity file version", "Capacity file", "Status", "Rule text"]
-    for col, header in enumerate(headers):
-        sheet.write(start_row + 1, col, header, fmt["header"])
-    for offset, (rule_no, capacity, status, text) in enumerate(pairs):
-        row = start_row + 2 + offset
-        sheet.write(row, 0, rule_no, fmt["name"])
-        sheet.write(row, 1, capacity, fmt["name"])
-        sheet.write(row, 2, capacity_file(capacity), fmt["text"])
-        sheet.write(row, 3, status, fmt["active"] if status == "Active" else fmt["kept"])
-        sheet.write(row, 4, text, fmt["text"])
-        sheet.set_row(row, 48)
-    return start_row + 2 + len(pairs)
+    return ["Store", *[item["rule"] for item in RULES], "Examples"]
 
 
 def write_store(workbook, fmt):
     sheet = workbook.add_worksheet("Store")
     sheet.set_tab_color(GREEN)
-    for col, width in enumerate([16, 24, 42, 14, 88]):
+    for col, width in enumerate([18, 26, 46, 14, 88]):
         sheet.set_column(col, col, width)
-    sheet.freeze_panes(5, 0)
+    sheet.freeze_panes(6, 0)
     sheet.write("A1", "GSM rule store", fmt["title"])
     sheet.merge_range(
         "A2:E2",
-        "Two sections. Each section has two rules. The capacity file version is beside the rule. "
+        "Open a version sheet for the rule. G900 TRX reduction is the first step. G1800 TRX addition is the second step. "
         f"Active rule {ACTIVE_RULE}. Active capacity file {capacity_file(ACTIVE_CAPACITY)}. Saved {SAVED}.",
         fmt["open"],
     )
-    sheet.set_row(1, 32)
-
-    g900_rows = []
-    g1800_rows = []
-    for rule, capacity, note, g900_1, g900_2, g1800_1, g1800_2 in RULES:
-        status = "Kept"
-        g900_rows.append(("Rule 1", capacity, status, g900_1))
-        g900_rows.append(("Rule 2", capacity, status, g900_2))
-        g1800_rows.append(("Rule 1", capacity, status, g1800_1))
-        g1800_rows.append(("Rule 2", capacity, status, g1800_2))
-    for capacity, status in (("v10", "Kept"), (ACTIVE_CAPACITY, "Active")):
-        g900_rows.append(("Rule 1", capacity, status, G900_NEW_1))
-        g900_rows.append(("Rule 2", capacity, status, G900_V9_2))
-        g1800_rows.append(("Rule 1", capacity, status, G1800_NEW_1))
-        g1800_rows.append(("Rule 2", capacity, status, G1800_NEW_2))
-
-    next_row = write_section_table(sheet, fmt, 3, G900, g900_rows)
-    next_row = write_section_table(sheet, fmt, next_row + 1, G1800, g1800_rows)
-    sheet.write(next_row + 1, 0, "Capacity file beside each rule version", fmt["section"])
+    sheet.set_row(1, 36)
     headers = ["Rule version", "Capacity file version", "Capacity file", "Status", "What changed in the file"]
     for col, header in enumerate(headers):
-        sheet.write(next_row + 2, col, header, fmt["header"])
+        sheet.write(4, col, header, fmt["header"])
     for index, (rule, capacity, status, change) in enumerate(CATALOG):
-        row = next_row + 3 + index
+        row = 5 + index
         sheet.write(row, 0, rule, fmt["name"])
         sheet.write(row, 1, capacity, fmt["name"])
         sheet.write(row, 2, capacity_file(capacity), fmt["text"])
         sheet.write(row, 3, status, fmt["active"] if status == "Active" else fmt["kept"])
         sheet.write(row, 4, change, fmt["text"])
         sheet.set_row(row, 32)
-    note_row = next_row + 4 + len(CATALOG)
+    note_row = 7 + len(CATALOG)
     notes = [
-        "GSM_Rules_Store_v1.xlsx and GSM_Rules_Store_v2.xlsx stay in the repo. This v3 store keeps every earlier rule and splits each one into the two sections.",
-        "A changed rule is the next rule version, saved in GSM_Rules_Store_v4.xlsx, with the next capacity file version beside it.",
-        "Ask to switch to a rule version, for example rule v8 or rule v9. Both sections switch together.",
+        "Earlier store files stay in the repo. This v4 store writes each rule as the two steps.",
+        "A changed rule is the next rule version, saved in the next store file, with the next capacity file version beside it.",
     ]
     for offset, line in enumerate(notes):
         sheet.merge_range(note_row + offset, 0, note_row + offset, 4, line, fmt["text"])
-        sheet.set_row(note_row + offset, 28)
+        sheet.set_row(note_row + offset, 24)
+
+
+def write_line(sheet, fmt, row, text, style, height=36):
+    sheet.merge_range(row, 0, row, 1, text, style)
+    sheet.set_row(row, height)
+    return row + 1
 
 
 def write_rule(workbook, fmt, item):
-    rule, capacity, change, g900_1, g900_2, g1800_1, g1800_2 = item
+    rule = item["rule"]
+    capacity = item["capacity"]
     sheet = workbook.add_worksheet(rule)
     sheet.set_tab_color(ORANGE if rule == ACTIVE_RULE else GREEN)
-    sheet.set_column("A:A", 28)
-    sheet.set_column("B:B", 18)
-    sheet.set_column("C:C", 110)
+    sheet.set_column("A:A", 32)
+    sheet.set_column("B:B", 118)
     also = ""
     if rule == ACTIVE_RULE:
-        also = f" Also used by capacity v10 and capacity {ACTIVE_CAPACITY}."
+        also = f" Also used by capacity v10, v11, and {ACTIVE_CAPACITY}."
     sheet.write("A1", f"Rule {rule}", fmt["title"])
     sheet.merge_range(
-        "A2:C2",
-        f"Capacity file version {capacity}: {capacity_file(capacity)}.{also} Two rules under each section.",
+        "A2:B2",
+        f"Capacity file version {capacity}: {capacity_file(capacity)}.{also}",
         fmt["open"],
     )
-    sheet.set_row(1, 32)
-    sheet.merge_range("A4:C4", change, fmt["text"])
-    sheet.set_row(3, 32)
-    rows = [
-        (G900, "Rule 1", g900_1),
-        (G900, "Rule 2", g900_2),
-        (G1800, "Rule 1", g1800_1),
-        (G1800, "Rule 2", g1800_2),
-    ]
-    for col, header in enumerate(["Section", "Rule", "Rule text"]):
-        sheet.write(5, col, header, fmt["header"])
-    for index, (section, rule_no, text) in enumerate(rows):
-        row = 6 + index
-        sheet.write(row, 0, section, fmt["name"])
-        sheet.write(row, 1, rule_no, fmt["name"])
-        sheet.write(row, 2, text, fmt["text"])
-        sheet.set_row(row, 56)
+    sheet.set_row(1, 24)
+    row = write_line(sheet, fmt, 3, item["note"], fmt["open"], 32)
+    row = write_line(sheet, fmt, row + 1, G900_STEP, fmt["section"], 22)
+    for lead, gates in item["gates"]:
+        row = write_line(sheet, fmt, row, lead, fmt["open"], 20)
+        sheet.write(row, 0, "Gate", fmt["header"])
+        sheet.write(row, 1, "Threshold", fmt["header"])
+        row += 1
+        for gate, threshold in gates:
+            sheet.write(row, 0, gate, fmt["gate"])
+            sheet.write(row, 1, threshold, fmt["text"])
+            sheet.set_row(row, 22)
+            row += 1
+        row += 1
+    row = write_line(sheet, fmt, row, item["after"], fmt["open"], 36)
+    if item["more"]:
+        row = write_line(sheet, fmt, row, item["more"], fmt["open"], 36)
+    row = write_line(sheet, fmt, row + 1, G1800_STEP, fmt["section"], 22)
+    row = write_line(sheet, fmt, row, item["intro"], fmt["open"], 32)
+    for number, line in enumerate(item["lines"], start=1):
+        row = write_line(sheet, fmt, row, f"{number}. {line}", fmt["open"], 48)
+    row = write_line(sheet, fmt, row, item["close"], fmt["open"], 32)
+    write_line(sheet, fmt, row + 1, item["capacity_note"], fmt["open"], 36)
 
 
 def write_examples(workbook, fmt):
