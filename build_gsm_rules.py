@@ -166,6 +166,15 @@ def add_rule_sheets(workbook, rules_file=False):
     return ["Store", *[item["rule"] for item in RULES], "Examples"]
 
 
+def add_active_rule_sheet(workbook, file_line):
+    """Add only the active rule. The capacity workbook uses this. The rule store does not."""
+    fmt = formats(workbook)
+    item = next(page for page in RULES if page["rule"] == ACTIVE_RULE)
+    name = f"Rule {ACTIVE_RULE}"
+    write_rule(workbook, fmt, item, False, sheet_name=name, file_line=file_line)
+    return name
+
+
 def prepare_sheet(sheet, rules_file):
     if rules_file:
         sheet.hide_gridlines(2)
@@ -218,10 +227,10 @@ def write_line(sheet, fmt, row, text, style, height=36):
     return row + 1
 
 
-def write_rule(workbook, fmt, item, rules_file):
+def write_rule(workbook, fmt, item, rules_file, sheet_name=None, file_line=None):
     rule = item["rule"]
     capacity = item["capacity"]
-    sheet = workbook.add_worksheet(rule)
+    sheet = workbook.add_worksheet(sheet_name or rule)
     prepare_sheet(sheet, rules_file)
     sheet.set_tab_color(ORANGE if rule == ACTIVE_RULE else GREEN)
     sheet.set_column(START, START, 32)
@@ -230,12 +239,14 @@ def write_rule(workbook, fmt, item, rules_file):
     if rule == "v9":
         also = " Also used by capacity v10 through v13."
     sheet.write(0, START, f"Rule {rule}", fmt["title"])
-    sheet.merge_range(
-        1, START, 1, START + 1,
-        f"Capacity file version {capacity}: {capacity_file(capacity)}.{also}",
-        fmt["open"],
-    )
-    sheet.set_row(1, 24)
+    if file_line is None:
+        caption = f"Capacity file version {capacity}: {capacity_file(capacity)}.{also}"
+        caption_height = 24
+    else:
+        caption = file_line
+        caption_height = 40
+    sheet.merge_range(1, START, 1, START + 1, caption, fmt["open"])
+    sheet.set_row(1, caption_height)
     row = write_line(sheet, fmt, 3, item["note"], fmt["open"], 32)
     row = write_line(sheet, fmt, row + 1, G900_STEP, fmt["section"], 22)
     for lead, gates in item["gates"]:

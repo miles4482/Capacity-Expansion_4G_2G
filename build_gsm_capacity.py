@@ -33,10 +33,10 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v16"
-# Rule v12 is the decision in this file.
-# Each version sheet is G900 reduction first, then G1800 addition.
-# GSM_Rules_Store_v8.xlsx is the same store.
+VERSION = "v17"
+# Rule v12 is the decision. v17 does not change that decision.
+# This workbook keeps only the v12 rule sheet.
+# GSM_Rules_Store_v8.xlsx still holds v1 through v12, with gridlines off and a two-column margin.
 # Capacity is read from the Half Rate 5% sheet, 60% column.
 ACTIVE_RULE = "v12"
 ACTIVE_RULE_FILE = "GSM_Rules_Store_v8.xlsx"
@@ -44,7 +44,7 @@ OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
 G1800_MAX_TRX = 12
-# The load rule stops at 12 TRX. CDR and bad quality can each add one more.
+# The load rule and the shared problem-line count both stop at 12 TRX.
 G1800_TABLE_TRX = 16
 # Physical TCH rows on the Half Rate 5% sheet. 120 TCH at 60% half rate is 192 channels.
 HR_PHYSICAL_MAX = 120
@@ -1322,21 +1322,70 @@ def build(records, table):
     summary.set_column("B:B", 78)
     summary.set_column("C:C", 16)
     summary.set_column("D:D", 18)
-    summary.set_column("E:E", 24)
-    summary.set_column("F:I", 16)
+    summary.set_column("E:I", 18)
     summary.hide_gridlines(2)
-    summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
-    summary.write("B2", f"{VERSION}. Rule v12. G900 TRX reduction is the first step. G1800 TRX addition is the second step. CDR, quality, and high ICM share one G1800 TRX.", section_fmt)
-    summary.set_row(1, 32)
-    summary.write(
-        "B3",
-        "Capacity Erlang is the 60% half-rate column of the Half Rate 5% sheet, read from physical TCH. "
-        "The measured half-rate ratio is still on the sheet and is not used in that capacity. "
-        "Voice load is busy-hour K3014 divided by that capacity. Busy-hour Erlang is not multiplied by 24. "
-        "Daily traffic is still the hourly average multiplied by 24 and is not used in voice load.",
-        note_fmt,
-    )
-    summary.set_row(2, 48)
+    summary.freeze_panes(3, 0)
+    summary.set_landscape()
+    summary.set_paper(8)
+    summary.fit_to_pages(1, 2)
+    summary.set_margins(0.5, 0.5, 0.6, 0.5)
+    summary.set_header(f"&L GSM capacity enhancement {VERSION} &R Rule {ACTIVE_RULE}")
+    summary.set_footer("&L Counts are formulas on All Cells &R Page &P of &N")
+    summary_section = workbook.add_format({
+        "bold": True, "font_name": "Calibri", "font_size": 14, "font_color": navy,
+        "bottom": 2, "bottom_color": navy, "valign": "vcenter",
+    })
+    label_plain = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "border": 1, "valign": "vcenter", "text_wrap": True,
+    })
+    label_orange = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "bold": True, "border": 1, "valign": "vcenter",
+        "text_wrap": True, "bg_color": pale_orange,
+    })
+    label_blue = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "bold": True, "border": 1, "valign": "vcenter",
+        "text_wrap": True, "bg_color": pale_blue,
+    })
+    label_green = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "bold": True, "border": 1, "valign": "vcenter",
+        "text_wrap": True, "bg_color": pale_green,
+    })
+    num_plain = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "border": 1, "num_format": "#,##0",
+        "align": "center", "valign": "vcenter",
+    })
+    num_orange = workbook.add_format({
+        "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1, "num_format": "#,##0",
+        "align": "center", "valign": "vcenter", "bg_color": pale_orange,
+    })
+    num_blue = workbook.add_format({
+        "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1, "num_format": "#,##0",
+        "align": "center", "valign": "vcenter", "bg_color": pale_blue,
+    })
+    num_green = workbook.add_format({
+        "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1, "num_format": "#,##0",
+        "align": "center", "valign": "vcenter", "bg_color": pale_green,
+    })
+    dash_plain = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "border": 1, "align": "center",
+        "valign": "vcenter", "font_color": "#8D8D8D",
+    })
+    dash_orange = workbook.add_format({
+        "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1, "align": "center",
+        "valign": "vcenter", "font_color": "#8D8D8D", "bg_color": pale_orange,
+    })
+    dash_blue = workbook.add_format({
+        "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1, "align": "center",
+        "valign": "vcenter", "font_color": "#8D8D8D", "bg_color": pale_blue,
+    })
+    dash_green = workbook.add_format({
+        "font_name": "Calibri", "font_size": 12, "bold": True, "border": 1, "align": "center",
+        "valign": "vcenter", "font_color": "#8D8D8D", "bg_color": pale_green,
+    })
+    subhead = workbook.add_format({
+        "font_name": "Calibri", "font_size": 11, "italic": True, "font_color": navy,
+        "bg_color": pale_gray, "border": 1, "valign": "vcenter", "text_wrap": True,
+    })
     data_first = 2
     data_last = last
     sheet = "'All Cells'"
@@ -1355,56 +1404,189 @@ def build(records, table):
             parts.append(criteria)
         return "=SUMIFS(" + ",".join(parts) + ")"
 
-    summary.write("B5", "G900 TRX reduction", header_orange)
-    summary.write("C5", "Cells / TRX", header_orange)
-    reduction_formulas = [
-        ("G900 cells", countifs(("Band", '"G900"'))),
-        ("G900 cells with more than 2 TRX", countifs(("Band", '"G900"'), ("F TRX>2", "1"))),
-        ("Reduced to 2 TRX", countifs(("G900 TRX Reduction", '"Yes"'))),
-        ("TRX removed by that reduction", sumifs("TRX Remove", ("G900 TRX Reduction", '"Yes"'))),
-        ("Of those, voice load after the cut is at least 80%", countifs(("G900 TRX Reduction", '"Yes"'), ("F Load after>=80", "1"))),
-    ]
-    for index, (label, formula) in enumerate(reduction_formulas):
-        summary.write(5 + index, 1, label, kpi_label_o)
-        summary.write_formula(5 + index, 2, formula, kpi_orange)
+    styles = {
+        "plain": (label_plain, num_plain, dash_plain),
+        "orange": (label_orange, num_orange, dash_orange),
+        "blue": (label_blue, num_blue, dash_blue),
+        "green": (label_green, num_green, dash_green),
+    }
 
-    summary.merge_range("E5:F5", "G1800 TRX addition", header_blue)
-    summary.write("G5", "Cells / TRX", header_blue)
-    addition_formulas = [
-        ("G900 cells that receive G1800 TRX", countifs(("G1800 Addition", '"Yes"'))),
-        ("G1800 TRX to add", f"=SUM({sheet}!{letter['G1800 TRX Add']}${data_first}:{letter['G1800 TRX Add']}${data_last})"),
-        ("Cells sized because voice load after the G900 step is at least 80%", countifs(("G1800 TRX for load", '">=1"'))),
-        ("Cells with daily CDR_N at least 10", countifs(("CDR line", "1"))),
-        ("Cells with DL and UL bad quality above 2%", countifs(("Quality line", "1"))),
-        ("Cells with high ICM only", countifs(("ICM line", "1"))),
-        ("Extra G900 TRX removed outside the full reduction", sumifs("TRX Remove", ("G900 TRX Reduction", '"No"'))),
-    ]
-    for index, (label, formula) in enumerate(addition_formulas):
-        summary.merge_range(5 + index, 4, 5 + index, 5, label, kpi_label_b)
-        summary.write_formula(5 + index, 6, formula, kpi_blue)
+    def put_section(row, title):
+        summary.merge_range(row, 1, row, 8, title, summary_section)
+        summary.set_row(row, 24)
+        return row + 1
 
-    summary.write("B13", "Footprint", header)
-    summary.write("C13", "Cells", header)
+    def put_note(row, text, height=36):
+        summary.merge_range(row, 1, row, 8, text, note_fmt)
+        summary.set_row(row, height)
+        return row + 1
+
+    def put_head(row, titles, fmt, height=22):
+        for col, text in enumerate(titles):
+            summary.write(row, 1 + col, text, fmt)
+        summary.set_row(row, height)
+        return row + 1
+
+    def put_metric(row, label, cells, trx, kind, height=22, write_trx=True):
+        label_fmt, num_fmt, dash_fmt = styles[kind]
+        summary.write(row, 1, label, label_fmt)
+        if cells is None:
+            summary.write(row, 2, "—", dash_fmt)
+        else:
+            summary.write_formula(row, 2, cells, num_fmt)
+        if write_trx:
+            if trx is None:
+                summary.write(row, 3, "—", dash_fmt)
+            else:
+                summary.write_formula(row, 3, trx, num_fmt)
+        summary.set_row(row, height)
+        return row + 1
+
+    summary.write(0, 1, f"GSM capacity enhancement {VERSION}", title_fmt)
+    summary.set_row(0, 26)
+    row = put_note(
+        1,
+        f"{VERSION}. Rule {ACTIVE_RULE}. Step 1 reduces a G900 cell to 2 TRX. "
+        "Step 2 adds G1800 TRX. CDR, quality, and high ICM share one G1800 TRX.",
+        32,
+    )
+    row = put_note(
+        row,
+        "Capacity Erlang is the 60% half-rate column of the Half Rate 5% sheet, read from physical TCH. "
+        "Voice load is busy-hour K3014 divided by that capacity. Busy-hour Erlang is not multiplied by 24. "
+        "Every count on this sheet is a formula on All Cells.",
+        36,
+    )
+    row += 1
+
+    row = put_section(row, "1. Network")
+    row = put_head(row, ["Item", "Cells"], header)
     footprint = [
         ("All cells", f"=COUNTA({sheet}!{letter['Cell Name']}${data_first}:{letter['Cell Name']}${data_last})"),
         ("G900", countifs(("Band", '"G900"'))),
         ("G1800 already on air", countifs(("Band", '"G1800"'))),
         ("Both 900 and 1800 TCH", countifs(("Band", '"Both"'))),
         ("No 900 or 1800 TCH samples", countifs(("Band", '"NoTCH"'))),
-        ("Cells with fewer than 7 busy-hour days", f'=COUNTIF({sheet}!{letter["BH Days"]}${data_first}:{letter["BH Days"]}${data_last},"<7")'),
+        ("Fewer than 7 busy-hour days", f'=COUNTIF({sheet}!{letter["BH Days"]}${data_first}:{letter["BH Days"]}${data_last},"<7")'),
     ]
-    for index, (label, formula) in enumerate(footprint):
-        summary.write(13 + index, 1, label, kpi_label)
-        summary.write_formula(13 + index, 2, formula, int_fmt)
+    for label, formula in footprint:
+        row = put_metric(row, label, formula, None, "plain", write_trx=False)
+    row += 1
 
-    bsc_header_row = 21
+    row = put_section(row, "2. Step 1. G900 cut to 2 TRX")
+    row = put_note(
+        row,
+        "A G900 cell is cut to 2 TRX when it has more than 2 TRX, busy-hour voice load is at or below 40%, "
+        "and congestion is inside the gate. TCH congestion must be below 1% and SDCCH congestion below 0.5%. "
+        "Both congestion checks are ignored when busy-hour RR307 is below 95%.",
+        48,
+    )
+    row = put_head(row, ["Item", "Cells", "TRX removed"], header_orange)
+    row = put_metric(row, "G900 cells", countifs(("Band", '"G900"')), None, "plain")
+    row = put_metric(
+        row, "G900 cells with more than 2 TRX",
+        countifs(("Band", '"G900"'), ("F TRX>2", "1")), None, "plain",
+    )
+    row = put_metric(
+        row, "Reduced to 2 TRX",
+        countifs(("G900 TRX Reduction", '"Yes"')),
+        sumifs("TRX Remove", ("G900 TRX Reduction", '"Yes"')),
+        "orange",
+    )
+    row = put_metric(
+        row, "Of those, voice load after the cut is at least 80%",
+        countifs(("G900 TRX Reduction", '"Yes"'), ("F Load after>=80", "1")),
+        None, "plain", 32,
+    )
+    row += 1
+
+    row = put_section(row, "3. Step 2. G1800 TRX to add")
+    row = put_note(
+        row,
+        "The load line and the problem lines do not stack. The load line adds the smallest number of G1800 TRX "
+        "that brings pooled voice load under 60%. CDR, quality, and high ICM share one G1800 TRX. "
+        "If the load line already added TRX, the problem lines add none. If one shared TRX still leaves voice load "
+        "at or above 60%, that count is raised until the load is under 60%.",
+        48,
+    )
+    row = put_head(row, ["Item", "Cells", "TRX added"], header_blue)
+    row = put_metric(
+        row, "G900 cells that receive G1800 TRX",
+        countifs(("G1800 Addition", '"Yes"')),
+        f"=SUM({sheet}!{letter['G1800 TRX Add']}${data_first}:{letter['G1800 TRX Add']}${data_last})",
+        "blue",
+    )
+    row = put_metric(
+        row, "    Load line: voice load after the G900 step is at least 80%",
+        countifs(("G1800 TRX for load", '">=1"')),
+        sumifs("G1800 TRX for load", ("G1800 TRX for load", '">=1"')),
+        "plain", 32,
+    )
+    row = put_metric(
+        row, "    Problem line only: CDR, quality, or high ICM, and the load line added nothing",
+        countifs(("G1800 TRX for problem lines", '">=1"'), ("G1800 TRX for load", "0")),
+        sumifs("G1800 TRX for problem lines", ("G1800 TRX for load", "0")),
+        "plain", 32,
+    )
+    summary.merge_range(
+        row, 1, row, 3,
+        "Lines that fired. A cell can sit on more than one line. These rows count lines, not extra TRX, so they are not added to the table above.",
+        subhead,
+    )
+    summary.set_row(row, 32)
+    row += 1
+    row = put_metric(row, "    Daily CDR_N at least 10", countifs(("CDR line", "1")), None, "plain")
+    row = put_metric(
+        row, "    DL and UL bad quality both above 2%",
+        countifs(("Quality line", "1")), None, "plain",
+    )
+    row = put_metric(row, "    High ICM only", countifs(("ICM line", "1")), None, "plain")
+    row += 1
+
+    row = put_section(row, "4. Extra G900 TRX removed with step 2")
+    row = put_note(
+        row,
+        "This is not the cut to 2 TRX. The cell still had at least 3 G900 TRX, and a problem line added G1800, "
+        "so exactly 1 G900 TRX is removed. Each of these cells is already included in the G1800 cells above.",
+        36,
+    )
+    row = put_head(row, ["Item", "Cells", "TRX removed"], header_orange)
+    row = put_metric(
+        row, "Extra G900 TRX removed",
+        countifs(("G900 TRX Reduction", '"No"'), ("TRX Remove", '">=1"')),
+        sumifs("TRX Remove", ("G900 TRX Reduction", '"No"')),
+        "orange",
+    )
+    row += 1
+
+    row = put_section(row, "5. G900 TRX removed, both steps")
+    row = put_note(
+        row,
+        "The full cut to 2 TRX plus the extra single TRX. A cell is in one of those two groups, not both.",
+        22,
+    )
+    row = put_head(row, ["Item", "Cells", "TRX removed"], header)
+    row = put_metric(
+        row, "G900 cells that lose TRX",
+        countifs(("TRX Remove", '">=1"')),
+        f"=SUM({sheet}!{letter['TRX Remove']}${data_first}:{letter['TRX Remove']}${data_last})",
+        "green",
+    )
+    row += 1
+
+    row = put_section(row, "6. Result by GBSC")
+    row = put_note(
+        row,
+        "Both actions means the cell was cut to 2 G900 TRX and also receives at least one G1800 TRX.",
+        22,
+    )
     bsc_headers = [
-        "GBSC", "Cells", "G900", "Reduced to 2", "TRX removed", "G1800 cells", "G1800 TRX", "Both actions",
+        "GBSC", "Cells", "G900 cells", "Reduced to 2 TRX", "G900 TRX removed",
+        "Cells receiving G1800", "G1800 TRX added", "Both actions",
     ]
-    for col, text in enumerate(bsc_headers):
-        summary.write(bsc_header_row, 1 + col, text, header)
-    for index, gbsc in enumerate(BSC_ORDER):
-        row = bsc_header_row + 1 + index
+    row = put_head(row, bsc_headers, header, 32)
+    first_data_row = row
+    for gbsc in BSC_ORDER:
         summary.write(row, 1, gbsc, cell_text)
         bsc_formulas = [
             countifs(("GBSC", f'"{gbsc}"')),
@@ -1417,109 +1599,77 @@ def build(records, table):
         ]
         for col, formula in enumerate(bsc_formulas, start=1):
             summary.write_formula(row, 1 + col, formula, cell_int)
-    total_row = bsc_header_row + 1 + len(BSC_ORDER)
-    summary.write(total_row, 1, "Total", total_text)
-    first_bsc = bsc_header_row + 2
-    last_bsc = bsc_header_row + 1 + len(BSC_ORDER)
+        summary.set_row(row, 20)
+        row += 1
+    last_data_row = row - 1
+    summary.write(row, 1, "Total", total_text)
+    first_excel = first_data_row + 1
+    last_excel = last_data_row + 1
     for col in range(1, len(bsc_headers)):
         excel_col = col_letter(2 + col)
-        summary.write_formula(total_row, 1 + col, f"=SUM({excel_col}{first_bsc}:{excel_col}{last_bsc})", total_fmt)
+        summary.write_formula(row, 1 + col, f"=SUM({excel_col}{first_excel}:{excel_col}{last_excel})", total_fmt)
+    summary.set_row(row, 22)
+    row += 2
 
-    note_row = total_row + 2
-    summary.write(note_row, 1, "How to read the result", section_fmt)
-    notes = [
-        "G900 TRX Reduction lists every G900 cell that meets the v12 gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Half Rate 5% sheet, with available TCH scaled by 2 / configured TRX.",
-        "G1800 Addition lists every G900 cell that receives one or more DCS1800 TRX. G1800 for load is the count that takes the pooled voice load under 60%. CDR, quality, and high ICM share one G1800 TRX. If the load count is already there, those lines add nothing more. If one shared TRX still leaves voice load at or above 60%, the problem-line count is the smallest number that goes under.",
-        "A red voice-load-final cell is still at or above 60% after the TRX on that row. Capacity final is the remaining G900 Erlang plus the new G1800 Erlang.",
-        "All Cells holds the live formulas. Gray columns are date averages. Capacity, Erl reads the 60% column of the Half Rate 5% sheet. Thresholds are on Parameters.",
-        "The two action sheets stay at the thresholds saved with this file. Changing a yellow parameter recalculates All Cells and this Summary.",
+    row = put_section(row, "7. Where to look")
+    summary.write(row, 1, "Sheet", header)
+    summary.merge_range(row, 2, row, 8, "What it holds", header)
+    summary.set_row(row, 22)
+    row += 1
+    guide = [
+        ("G900 TRX Reduction", "Each G900 cell cut to 2 TRX. Voice load after the cut uses available TCH scaled by 2 / configured TRX, then the Half Rate 5% sheet."),
+        ("G1800 Addition", "Each G900 cell that receives G1800 TRX. The load line and the problem lines are separate columns. A red Voice Load final cell is still at or above 60%."),
+        ("All Cells", "One row per cell. Decision columns are formulas. Gray columns are the date averages those formulas use."),
+        ("Parameters", "Yellow cells are the thresholds. Editing one recalculates All Cells and this Summary. The two action sheets stay at the result saved with this file."),
+        (f"Rule {ACTIVE_RULE}", f"The decision used in this file. G900 reduction is the first step. G1800 addition is the second. Rules v1 through {ACTIVE_RULE} stay in {ACTIVE_RULE_FILE}."),
+        ("Half Rate 5%", "Offered Erlang at 5% blocking. Capacity reads the 60% half-rate column from physical TCH."),
     ]
-    for index, text in enumerate(notes):
-        summary.merge_range(note_row + 1 + index, 1, note_row + 1 + index, 8, text, text_fmt)
-        summary.set_row(note_row + 1 + index, 36)
+    for name, meaning in guide:
+        summary.write(row, 1, name, cell_text)
+        summary.merge_range(row, 2, row, 8, meaning, label_plain)
+        summary.set_row(row, 32)
+        row += 1
 
     chart = workbook.add_chart({"type": "column"})
-    chart.set_title({"name": "G900 TRX removed and G1800 TRX to add"})
+    chart.set_title({"name": "G900 TRX removed and G1800 TRX added, by GBSC"})
     chart.set_y_axis({"name": "TRX"})
     chart.set_size({"width": 720, "height": 320})
     chart.add_series({
-        "name": "TRX removed",
-        "categories": ["Summary", first_bsc - 1, 1, last_bsc - 1, 1],
-        "values": ["Summary", first_bsc - 1, 5, last_bsc - 1, 5],
+        "name": "G900 TRX removed",
+        "categories": ["Summary", first_data_row, 1, last_data_row, 1],
+        "values": ["Summary", first_data_row, 5, last_data_row, 5],
         "fill": {"color": orange},
     })
     chart.add_series({
-        "name": "G1800 TRX",
-        "categories": ["Summary", first_bsc - 1, 1, last_bsc - 1, 1],
-        "values": ["Summary", first_bsc - 1, 7, last_bsc - 1, 7],
+        "name": "G1800 TRX added",
+        "categories": ["Summary", first_data_row, 1, last_data_row, 1],
+        "values": ["Summary", first_data_row, 7, last_data_row, 7],
         "fill": {"color": blue},
     })
     chart.set_legend({"position": "bottom"})
-    summary.insert_chart(note_row + 7, 1, chart)
+    summary.insert_chart(row + 1, 1, chart)
+    summary.print_area(0, 0, row + 18, 8)
 
-    rules = workbook.add_worksheet("Rules")
-    rules.set_tab_color("#548235")
-    rules.set_column("A:A", 3)
-    rules.set_column("B:B", 140)
-    rule_lines = [
-        "",
-        "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v12. Open the v12 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. Capacity is the 60% column of the Half Rate 5% sheet.",
-        "",
-        "Capacity",
-        "Capacity, Erl is the Offered Erl at 5% on the Half Rate 5% sheet, 60% half-rate column, for the physical TCH count. A fractional TCH is the straight line between the two nearest rows.",
-        "Half Rate Traffic Ratio is still K3034 / K3014 from the busy hour. It is not used in Capacity, Erl. The design half rate is 60%.",
-        "Voice Load, % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour and is not multiplied by 24.",
-        "G1800 TRX Capacity reads the same 60% column for the new cell's TCH count.",
-        "10 physical TCH at full rate carry 6.22 Erl. The same 10 TCH at 60% half rate carry 11.54 Erl.",
-        "",
-        "1. G900 TRX reduction, first step",
-        "Configured TRX above 2. Busy-hour voice load at or below 40%. TCH congestion below 1%, and SDCCH congestion below 0.5%, unless busy-hour RR307 is below 95%. When RR307 is below 95%, both congestion checks are ignored. Busy-hour RR307 above 99% is not a gate. The gate table is on the v12 sheet.",
-        "The cell then keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, and voice load is recalculated from that.",
-        "If 3 or more TRX are still there after this step, and the G1800 step is adding a TRX for CDR, bad quality, or high ICM, remove exactly 1 more G900 TRX. A cell already at 2 loses nothing more.",
-        "",
-        "2. G1800 TRX addition, second step",
-        "Voice load for these lines is the load after the reduction. A cell that was not reduced uses its current load.",
-        "1. Load. If that voice load is at least 80%, add the smallest number of G1800 TRX that brings pooled voice load under 60%. Cap is 12 TRX. This is the capacity count.",
-        "2. CDR. Daily CDR_N average at least 10 is one problem line.",
-        "3. Quality. DL bad quality above 2% and UL bad quality above 2% is one problem line.",
-        "4. High ICM. ICM band 4-5 above 50% is one problem line, and only when the reduction, the load line, CDR, and quality did not trigger.",
-        "CDR, quality, and high ICM share one G1800 TRX. A second line does not add another TRX. If the load line already added TRX, these lines add nothing more. If the load line added nothing, add 1 G1800 TRX. If that 1 TRX still leaves voice load at or above 60%, add the smallest number that brings it under 60%.",
-        "Actions apply to G900 cells. A cell that already has 1800 TCH is not given another G1800 plan by these rules.",
-        "",
-        "What did not change",
-        "Congestion, CDR, HOSR, bad quality, ICM, incoming HOSR, CSSR, and the daily x24 traffic columns use the same formulas as v7. Daily traffic is reference only.",
-        "CDR_N, bad quality, and ICM still come from the daily file. Voice load, available TCH, congestion, TRX, and RR307 come from the busy-hour file. Each cell is averaged over the dates that cell has.",
-        "",
-        "What this file does not do",
-        "It does not plan the L900 move from 5 MHz to 10 MHz. It does not choose a G1800 ARFCN or BCCH.",
-    ]
-    rules.write("B1", f"Rules applied in this workbook ({VERSION})", title_fmt)
-    headings = {
-        "Version", "Capacity", "1. G900 TRX reduction, first step", "2. G1800 TRX addition, second step", "What did not change", "What this file does not do",
-    }
-    for index, line in enumerate(rule_lines):
-        if line in headings:
-            rules.write(1 + index, 1, line, section_fmt)
-        elif line == "":
-            rules.write(1 + index, 1, "", text_fmt)
-        else:
-            rules.write(1 + index, 1, line, text_fmt)
-            rules.set_row(1 + index, 18 + 14 * (len(line) // 160))
-
-    from build_gsm_rules import ACTIVE_CAPACITY, ACTIVE_RULE as STORE_RULE, add_rule_sheets
-    if STORE_RULE != ACTIVE_RULE or ACTIVE_CAPACITY != VERSION:
-        raise SystemExit(f"Rule store {STORE_RULE}/{ACTIVE_CAPACITY} does not match this workbook {ACTIVE_RULE}/{VERSION}")
-    rule_sheets = add_rule_sheets(workbook)
+    from build_gsm_rules import ACTIVE_RULE as STORE_RULE, add_active_rule_sheet
+    if STORE_RULE != ACTIVE_RULE:
+        raise SystemExit(f"Rule store {STORE_RULE} does not match this workbook {ACTIVE_RULE}")
+    rule_sheet = add_active_rule_sheet(
+        workbook,
+        f"This workbook is {VERSION}: {OUT}. This sheet is rule {ACTIVE_RULE}, the decision used here. "
+        f"The same rule, and rules v1 through {ACTIVE_RULE}, stay in {ACTIVE_RULE_FILE}.",
+    )
     order = [
-        "Summary", "Store",
+        "Summary",
         "G900 TRX Reduction", "G1800 Addition", "All Cells",
-        "Half Rate 5%", "G1800 TRX Capacity", "Parameters", "Rules",
-        *[name for name in rule_sheets if name != "Store"],
+        "Half Rate 5%", "G1800 TRX Capacity", "Parameters",
+        rule_sheet,
     ]
     workbook.worksheets_objs.sort(key=lambda item: order.index(item.name))
+    for index, worksheet in enumerate(workbook.worksheets_objs):
+        worksheet.index = index
     workbook.close()
     return reductions, additions
+
 
 
 def main():
@@ -1563,6 +1713,13 @@ def main():
     if failures:
         print(failures[:8])
         raise SystemExit(f"{len(failures)} decision checks failed")
+    load_cells = sum(1 for item in records if item["plan"]["n_load"])
+    problem_cells = sum(1 for item in records if item["plan"]["n_problem"])
+    receive = sum(1 for item in records if item["plan"]["n_add"])
+    if load_cells + problem_cells != receive:
+        raise SystemExit("load line and problem line do not cover the G1800 cells")
+    if any(item["plan"]["n_load"] and item["plan"]["n_problem"] for item in records):
+        raise SystemExit("a cell is on both the load line and the problem line")
     reductions, additions = build(records, table)
     print("workbook", OUT)
     print("cells", len(records))
