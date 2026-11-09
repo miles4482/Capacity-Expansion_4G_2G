@@ -3,18 +3,20 @@
 
 Rule versions are v1, v2, v3, and so on. Each one sits beside the capacity
 file version that used it. GSM_Rules_Store_v1.xlsx stays as the first store.
-This writer builds GSM_Rules_Store_v4.xlsx and can add the same sheets to a
+This writer builds GSM_Rules_Store_v5.xlsx and can add the same sheets to a
 capacity workbook. Each version sheet is the first step, G900 reduction,
-then the second step, G1800 addition.
+then the second step, G1800 addition. Gridlines are hidden on this workbook.
 """
 
 import xlsxwriter
 
-STORE_VERSION = "v4"
+STORE_VERSION = "v5"
 STORE_FILE = f"GSM_Rules_Store_{STORE_VERSION}.xlsx"
 ACTIVE_RULE = "v9"
-ACTIVE_CAPACITY = "v12"
+ACTIVE_CAPACITY = "v13"
 SAVED = "9 Nov 2026"
+# Rule sheets start at column C, two columns in from the left edge.
+START = 2
 G900_STEP = "1. G900 TRX reduction, first step"
 G1800_STEP = "2. G1800 TRX addition, second step"
 
@@ -72,7 +74,7 @@ NEW_G1800 = [
     "High ICM. If ICM band 4-5 is above 50%, and the reduction, the 80% load line, CDR, and bad quality did not trigger, add 1 G1800 TRX.",
 ]
 NEW_CLOSE = "The four G1800 counts are added. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX."
-NEW_CAPACITY = "Capacity, Erl is Erlang B at 5% blocking. Equivalent channels = available TCH x (1 + 0.60). Voice load % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour."
+NEW_CAPACITY = "Capacity, Erl is the 60% half-rate column of the Half Rate 5% sheet, Offered Erl at 5%, read from physical TCH. Voice load % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour. Capacity v9 through v12 used the Erlang B channel table. Capacity v13 uses this Half Rate 5% sheet."
 
 def rule_page(rule, capacity, note, gates, after, more, intro, lines, close, capacity_note):
     return {
@@ -99,13 +101,14 @@ RULES = [
     rule_page("v6", "v6", "Same steps as v3. Average headers use the counter with _avg.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
     rule_page("v7", "v7", "Same steps as v3. Headers are description, counter, then Avg. This file reduced 3,180 G900 cells and proposed 2,463 G1800 cells.", OLD_GATES, OLD_AFTER, "", "A G1800 cell is proposed on a G900 cell. TRX count is not a filter.", OLD_G1800, OLD_CLOSE, OLD_MEASURED + "Voice load uses busy-hour K3014 with no x24."),
     rule_page("v8", "v8", "Erlang B at 5% and a fixed 60% half rate. The extra G900 removal can take a second TRX. This file removed 3,618 G900 TRX and added 2,999 G1800 TRX.", NEW_GATES, NEW_AFTER, V8_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
-    rule_page("v9", "v9", "Same G1800 step as v8. The extra G900 removal is one TRX. Capacity v9 through v12 use this page. Removed G900 TRX is 3,608. G1800 TRX is 2,999.", NEW_GATES, NEW_AFTER, V9_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
+    rule_page("v9", "v9", "Same G1800 step as v8. The extra G900 removal is one TRX. Capacity v9 through v12 removed 3,608 G900 TRX and added 2,999 G1800 TRX. Capacity v13 uses the Half Rate 5% sheet.", NEW_GATES, NEW_AFTER, V9_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
 ]
 
 CATALOG = [(item["rule"], item["capacity"], "Kept", item["note"]) for item in RULES]
 CATALOG.append(("v9", "v10", "Kept", "Same rule v9. First capacity file that carried the rule store."))
 CATALOG.append(("v9", "v11", "Kept", "Same rule v9."))
-CATALOG.append(("v9", ACTIVE_CAPACITY, "Active", "Active capacity file. G900 reduction is the first step. G1800 addition is the second step."))
+CATALOG.append(("v9", "v12", "Kept", "Same rule v9. The version sheet is the two steps, with the gate table."))
+CATALOG.append(("v9", ACTIVE_CAPACITY, "Active", "Active capacity file. Capacity is the 60% column of the Half Rate 5% sheet."))
 
 
 def formats(workbook):
@@ -126,25 +129,33 @@ def formats(workbook):
     }
 
 
-def add_rule_sheets(workbook):
-    """Add Store, v1 through v9, and Examples. Safe inside a capacity workbook."""
+def add_rule_sheets(workbook, rules_file=False):
+    """Add Store, v1 through v9, and Examples. Gridlines stay off only in the rules workbook."""
     fmt = formats(workbook)
-    write_store(workbook, fmt)
+    write_store(workbook, fmt, rules_file)
     for item in RULES:
-        write_rule(workbook, fmt, item)
-    write_examples(workbook, fmt)
+        write_rule(workbook, fmt, item, rules_file)
+    write_examples(workbook, fmt, rules_file)
     return ["Store", *[item["rule"] for item in RULES], "Examples"]
 
 
-def write_store(workbook, fmt):
+def prepare_sheet(sheet, rules_file):
+    if rules_file:
+        sheet.hide_gridlines(2)
+    sheet.set_column(0, START - 1, 3)
+
+
+def write_store(workbook, fmt, rules_file):
     sheet = workbook.add_worksheet("Store")
+    prepare_sheet(sheet, rules_file)
     sheet.set_tab_color(GREEN)
-    for col, width in enumerate([18, 26, 46, 14, 88]):
-        sheet.set_column(col, col, width)
+    widths = [18, 26, 46, 14, 88]
+    for offset, width in enumerate(widths):
+        sheet.set_column(START + offset, START + offset, width)
     sheet.freeze_panes(6, 0)
-    sheet.write("A1", "GSM rule store", fmt["title"])
+    sheet.write(0, START, "GSM rule store", fmt["title"])
     sheet.merge_range(
-        "A2:E2",
+        1, START, 1, START + 4,
         "Open a version sheet for the rule. G900 TRX reduction is the first step. G1800 TRX addition is the second step. "
         f"Active rule {ACTIVE_RULE}. Active capacity file {capacity_file(ACTIVE_CAPACITY)}. Saved {SAVED}.",
         fmt["open"],
@@ -152,44 +163,48 @@ def write_store(workbook, fmt):
     sheet.set_row(1, 36)
     headers = ["Rule version", "Capacity file version", "Capacity file", "Status", "What changed in the file"]
     for col, header in enumerate(headers):
-        sheet.write(4, col, header, fmt["header"])
+        sheet.write(4, START + col, header, fmt["header"])
     for index, (rule, capacity, status, change) in enumerate(CATALOG):
         row = 5 + index
-        sheet.write(row, 0, rule, fmt["name"])
-        sheet.write(row, 1, capacity, fmt["name"])
-        sheet.write(row, 2, capacity_file(capacity), fmt["text"])
-        sheet.write(row, 3, status, fmt["active"] if status == "Active" else fmt["kept"])
-        sheet.write(row, 4, change, fmt["text"])
+        values = [rule, capacity, capacity_file(capacity), status, change]
+        styles = [
+            fmt["name"], fmt["name"], fmt["text"],
+            fmt["active"] if status == "Active" else fmt["kept"], fmt["text"],
+        ]
+        for col, (value, style) in enumerate(zip(values, styles)):
+            sheet.write(row, START + col, value, style)
         sheet.set_row(row, 32)
     note_row = 7 + len(CATALOG)
     notes = [
-        "Earlier store files stay in the repo. This v4 store writes each rule as the two steps.",
+        "Earlier store files stay in the repo. This v5 store writes each rule as the two steps, two columns in from the left.",
         "A changed rule is the next rule version, saved in the next store file, with the next capacity file version beside it.",
+        "Capacity v13 reads Offered Erl at 5% from the 60% column of the Half Rate 5% sheet.",
     ]
     for offset, line in enumerate(notes):
-        sheet.merge_range(note_row + offset, 0, note_row + offset, 4, line, fmt["text"])
+        sheet.merge_range(note_row + offset, START, note_row + offset, START + 4, line, fmt["text"])
         sheet.set_row(note_row + offset, 24)
 
 
 def write_line(sheet, fmt, row, text, style, height=36):
-    sheet.merge_range(row, 0, row, 1, text, style)
+    sheet.merge_range(row, START, row, START + 1, text, style)
     sheet.set_row(row, height)
     return row + 1
 
 
-def write_rule(workbook, fmt, item):
+def write_rule(workbook, fmt, item, rules_file):
     rule = item["rule"]
     capacity = item["capacity"]
     sheet = workbook.add_worksheet(rule)
+    prepare_sheet(sheet, rules_file)
     sheet.set_tab_color(ORANGE if rule == ACTIVE_RULE else GREEN)
-    sheet.set_column("A:A", 32)
-    sheet.set_column("B:B", 118)
+    sheet.set_column(START, START, 32)
+    sheet.set_column(START + 1, START + 1, 118)
     also = ""
     if rule == ACTIVE_RULE:
-        also = f" Also used by capacity v10, v11, and {ACTIVE_CAPACITY}."
-    sheet.write("A1", f"Rule {rule}", fmt["title"])
+        also = " Also used by capacity v10 through v13."
+    sheet.write(0, START, f"Rule {rule}", fmt["title"])
     sheet.merge_range(
-        "A2:B2",
+        1, START, 1, START + 1,
         f"Capacity file version {capacity}: {capacity_file(capacity)}.{also}",
         fmt["open"],
     )
@@ -198,12 +213,12 @@ def write_rule(workbook, fmt, item):
     row = write_line(sheet, fmt, row + 1, G900_STEP, fmt["section"], 22)
     for lead, gates in item["gates"]:
         row = write_line(sheet, fmt, row, lead, fmt["open"], 20)
-        sheet.write(row, 0, "Gate", fmt["header"])
-        sheet.write(row, 1, "Threshold", fmt["header"])
+        sheet.write(row, START, "Gate", fmt["header"])
+        sheet.write(row, START + 1, "Threshold", fmt["header"])
         row += 1
         for gate, threshold in gates:
-            sheet.write(row, 0, gate, fmt["gate"])
-            sheet.write(row, 1, threshold, fmt["text"])
+            sheet.write(row, START, gate, fmt["gate"])
+            sheet.write(row, START + 1, threshold, fmt["text"])
             sheet.set_row(row, 22)
             row += 1
         row += 1
@@ -218,15 +233,16 @@ def write_rule(workbook, fmt, item):
     write_line(sheet, fmt, row + 1, item["capacity_note"], fmt["open"], 36)
 
 
-def write_examples(workbook, fmt):
+def write_examples(workbook, fmt, rules_file):
     from build_gsm_capacity import build_erlang_table, decide, defaults, g1800_caps
 
     sheet = workbook.add_worksheet("Examples")
+    prepare_sheet(sheet, rules_file)
     sheet.set_tab_color(GREEN)
-    sheet.write("A1", "Examples for rule v9", fmt["title"])
+    sheet.write(0, START, "Examples for rule v9", fmt["title"])
     sheet.merge_range(
-        "A2:V2",
-        f"These rows are rule v9, used by {capacity_file('v9')}, {capacity_file('v10')}, and {capacity_file(ACTIVE_CAPACITY)}.",
+        1, START, 1, START + 21,
+        f"These rows are rule v9. Capacity v13 reads the Half Rate 5% sheet. Also used by {capacity_file('v9')} through {capacity_file('v12')}.",
         fmt["open"],
     )
     headers = [
@@ -236,10 +252,9 @@ def write_examples(workbook, fmt):
         "For load", "For CDR", "For quality", "For ICM", "What rule v9 does",
     ]
     for col, header in enumerate(headers):
-        sheet.set_column(col, col, 16 if col else 32)
-    sheet.set_column(21, 21, 64)
+        sheet.set_column(START + col, START + col, 32 if col == 0 else 64 if col == 21 else 16)
     for col, header in enumerate(headers):
-        sheet.write(4, col, header, fmt["header"])
+        sheet.write(4, START + col, header, fmt["header"])
     cases = [
         ("Quiet cell, all five gates", "G900", 4, 20, 0.2, 0.1, 99.5, 1, 0.4, 0.4, 10, 2.0, 30, "Keep 2 TRX. No G1800 add."),
         ("Voice already high, only 2 TRX", "G900", 2, 90, 0.1, 0.1, 100, 0, 0.1, 0.1, 1, 16, 14, "No reduction. G1800 comes from the load rule. No extra G900 removal."),
@@ -264,9 +279,9 @@ def write_examples(workbook, fmt):
         for col, value in enumerate(values):
             style = fmt["name"] if col == 0 else fmt["text"] if col == 21 else fmt["num"] if isinstance(value, float) else fmt["int"] if isinstance(value, int) else fmt["center"]
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                sheet.write_number(row, col, value, style)
+                sheet.write_number(row, START + col, value, style)
             else:
-                sheet.write(row, col, value, style)
+                sheet.write(row, START + col, value, style)
         sheet.set_row(row, 28)
         if plan["removed_cdr"] + plan["removed_qual"] + plan["removed_icm"] > 1:
             raise SystemExit(f"{label} removed more than one extra G900 TRX")
@@ -274,7 +289,7 @@ def write_examples(workbook, fmt):
 
 def build():
     workbook = xlsxwriter.Workbook(STORE_FILE)
-    names = add_rule_sheets(workbook)
+    names = add_rule_sheets(workbook, rules_file=True)
     workbook.worksheets_objs.sort(key=lambda item: names.index(item.name))
     workbook.close()
     print(f"workbook {STORE_FILE}")

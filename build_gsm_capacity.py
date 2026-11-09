@@ -33,18 +33,30 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v12"
+VERSION = "v13"
 # Rule v9 is the decision in this file.
 # Each version sheet is G900 reduction first, then G1800 addition.
-# GSM_Rules_Store_v4.xlsx is the same store.
+# GSM_Rules_Store_v5.xlsx is the same store.
+# Capacity is read from the Half Rate 5% sheet, 60% column.
 ACTIVE_RULE = "v9"
-ACTIVE_RULE_FILE = "GSM_Rules_Store_v4.xlsx"
+ACTIVE_RULE_FILE = "GSM_Rules_Store_v5.xlsx"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
 G1800_MAX_TRX = 12
 # The load rule stops at 12 TRX. CDR and bad quality can each add one more.
 G1800_TABLE_TRX = 16
+# Physical TCH rows on the Half Rate 5% sheet. 120 TCH at 60% half rate is 192 channels.
+HR_PHYSICAL_MAX = 120
+HR_RATIOS = [
+    (0.0, "0", "0% half rate"),
+    (0.2, "1/5", "20% half rate"),
+    (0.4, "2/5", "40% half rate"),
+    (0.5, "1/2", "50% half rate"),
+    (0.6, "3/5", "60% half rate"),
+    (0.8, "4/5", "80% half rate"),
+    (1.0, "1", "100% half rate"),
+]
 TRAFFIC_HOURS = 24
 BSC_ORDER = ["MYMH05", "MYMH06", "MYMH07", "SYLH04", "TNGH12"]
 SUM_FIELDS = [
@@ -209,7 +221,24 @@ def g1800_caps(table, hr):
 
 
 def capacity_of(tch, hr, table):
-    return offered_at(tch * (1.0 + hr), table)
+    """Offered Erl from the Half Rate 5% sheet: physical TCH at the design half rate.
+
+    Integer TCH reads that row. A fractional TCH is the straight line between
+    the two nearest physical-TCH rows of the offered column.
+    """
+    if tch <= 0:
+        return 0.0
+    if tch >= HR_PHYSICAL_MAX:
+        return offered_at(HR_PHYSICAL_MAX * (1.0 + hr), table)
+    lower = int(tch)
+    if lower < 1:
+        return offered_at(1.0 + hr, table) * tch
+    low = offered_at(lower * (1.0 + hr), table)
+    fraction = tch - lower
+    if fraction < 1e-12:
+        return low
+    high = offered_at((lower + 1) * (1.0 + hr), table)
+    return low + fraction * (high - low)
 
 
 def tch_for_trx(avail, configured, kept):
@@ -779,16 +808,17 @@ def build(records, table):
     def ref(name, row):
         return f"{letter[name]}{row}"
 
-    def erlang_lookup(expr):
-        channels = "'Erlang B 5%'!$A$6:$A$205"
-        offered = "'Erlang B 5%'!$B$6:$B$205"
+    def half_rate_lookup(physical):
+        """60% half-rate offered Erlang. physical is a TCH count, not equivalent channels."""
+        rows = "'Half Rate 5%'!$A$7:$A$126"
+        offered = "'Half Rate 5%'!$K$7:$K$126"
         return (
-            f"IF({expr}<=0,0,"
-            f"IF({expr}<1,INDEX({offered},1)*{expr},"
-            f"IF({expr}>=200,INDEX({offered},200),"
-            f"IF(ABS({expr}-INT({expr}))<1E-9,INDEX({offered},MATCH(INT({expr}),{channels},0)),"
-            f"INDEX({offered},MATCH(INT({expr}),{channels},0))+({expr}-INT({expr}))*"
-            f"(INDEX({offered},MATCH(INT({expr})+1,{channels},0))-INDEX({offered},MATCH(INT({expr}),{channels},0)))))))"
+            f"IF({physical}<=0,0,"
+            f"IF({physical}<1,INDEX({offered},1)*{physical},"
+            f"IF({physical}>=120,INDEX({offered},120),"
+            f"IF(ABS({physical}-INT({physical}))<1E-9,INDEX({offered},MATCH(INT({physical}),{rows},0)),"
+            f"INDEX({offered},MATCH(INT({physical}),{rows},0))+({physical}-INT({physical}))*"
+            f"(INDEX({offered},MATCH(INT({physical})+1,{rows},0))-INDEX({offered},MATCH(INT({physical}),{rows},0)))))))"
         )
 
     parameters = workbook.add_worksheet("Parameters")
@@ -811,45 +841,53 @@ def build(records, table):
         parameters.write(excel_row - 1, 3, note, cell_text)
         workbook.define_name(name, f"=Parameters!$B${excel_row}")
 
-    erlang = workbook.add_worksheet("Erlang B 5%")
-    erlang.set_tab_color("#548235")
-    erlang.freeze_panes(5, 1)
-    erlang.set_column("A:A", 16)
-    erlang.set_column("B:C", 28)
-    erlang.set_column("D:D", 62)
-    erlang.write("A1", "Erlang B offered traffic at 5% blocking", title_fmt)
-    erlang.write("A2", "Capacity, Erl looks up equivalent channels on this sheet. Equivalent channels = Available TCHs x (1 + pHR). pHR is 0.60, so the lookup is not the physical TCH row by itself. A fractional channel count is read on the straight line between the two nearest rows.", note_fmt)
-    erlang.write("A3", "10 channels at 5% = 6.22 Erl. 16 channels, which is 10 TCH at 60% half rate, = 11.54 Erl. Huawei's 5% column: 14 TCH = 9.73, 21 TCH = 16.19, 29 TCH = 23.83, 36 TCH = 30.66.", note_fmt)
-    erlang.set_row(1, 32)
-    erlang.set_row(2, 32)
-    for col, text in enumerate(["Channels N", "Offered traffic at 5%, Erl", "Erl per channel", "Reference"]):
-        erlang.write(4, col, text, header)
-    notes_n = {
-        6: "1 TRX, BCCH + SDCCH",
-        7: "1 TRX, BCCH and SDCCH combined",
-        10: "10 TCH, full rate",
-        14: "2 TRX. Huawei 5% column is 9.73 Erl",
-        16: "10 TCH at 60% half rate. 11.54 Erl",
-        21: "3 TRX. Huawei 5% column is 16.19 Erl",
-        29: "4 TRX. Huawei 5% column is 23.83 Erl",
-        36: "5 TRX. Huawei 5% column is 30.66 Erl",
-    }
+    half = workbook.add_worksheet("Half Rate 5%")
+    half.set_tab_color("#C65911")
+    half.freeze_panes(6, 1)
+    half.set_column("A:A", 16)
+    half.write("A1", "Half-rate capacity read from the 5% Erlang B table", title_fmt)
+    half.write("A2", "Equivalent channels = physical TCH x (1 + half-rate traffic ratio). Capacity, Erl reads the 60% half rate column, Offered Erl at 5%. A fractional TCH count is the straight line between the two nearest physical TCH rows.", note_fmt)
+    half.write("A3", "10 physical TCH at full rate carry 6.22 Erl. The same 10 TCH at 60% half rate are 16 channels and carry 11.54 Erl. Huawei 5% checks: 14 TCH = 9.73, 21 TCH = 16.19, 29 TCH = 23.83, 36 TCH = 30.66.", note_fmt)
+    half.set_row(1, 36)
+    half.set_row(2, 32)
+    half.set_row(4, 22)
+    half.set_row(5, 30)
+    header_hr = workbook.add_format({"font_name": "Calibri", "font_size": 10, "bold": True, "font_color": "white", "bg_color": "#C65911", "align": "center", "valign": "vcenter", "border": 1, "text_wrap": True})
+    half.merge_range(4, 0, 5, 0, "Physical TCH", header)
+    for index, (_ratio, _expr, ratio_label) in enumerate(HR_RATIOS):
+        col = 1 + index * 2
+        half.set_column(col, col + 1, 16)
+        group = header_hr if _expr == "3/5" else header
+        half.merge_range(4, col, 4, col + 1, ratio_label, group)
+        half.write(5, col, "Equivalent channels", group)
+        half.write(5, col + 1, "Offered Erl at 5%", group)
+    marked_tch = {6, 7, 10, 13, 14, 21, 29, 36}
     hi_n = workbook.add_format({"font_name": "Calibri", "font_size": 10, "border": 1, "align": "center", "num_format": "0", "bg_color": pale_yellow, "bold": True})
     hi_e = workbook.add_format({"font_name": "Calibri", "font_size": 10, "border": 1, "align": "center", "num_format": "0.00", "bg_color": pale_yellow, "bold": True})
-    hi_t = workbook.add_format({"font_name": "Calibri", "font_size": 10, "border": 1, "bg_color": pale_yellow, "valign": "vcenter"})
-    for channels in range(1, ERLANG_MAX + 1):
-        row = 5 + channels - 1
-        marked = channels in notes_n
-        erlang.write_number(row, 0, channels, hi_n if marked else cell_int)
-        erlang.write_number(row, 1, table[channels], hi_e if marked else cell_num)
-        erlang.write_number(row, 2, table[channels] / channels, hi_e if marked else cell_num)
-        erlang.write(row, 3, notes_n.get(channels, ""), hi_t if marked else cell_text)
+    for physical in range(1, HR_PHYSICAL_MAX + 1):
+        row = 6 + physical - 1
+        excel_row = row + 1
+        marked = physical in marked_tch
+        half.write_number(row, 0, physical, hi_n if marked else cell_int)
+        for index, (ratio, expr, _label) in enumerate(HR_RATIOS):
+            col = 1 + index * 2
+            highlight = marked or expr == "3/5"
+            number_fmt = hi_e if highlight else cell_num
+            half.write_formula(row, col, f"=$A{excel_row}*(1+{expr})", number_fmt, physical * (1.0 + ratio))
+            half.write_number(row, col + 1, offered_at(physical * (1.0 + ratio), table), number_fmt)
+    half.write(4, 16, "10 TCH example", header)
+    half.write(5, 16, "Full rate, offered Erl at 5%", cell_text)
+    half.write_number(5, 17, table[10], cell_num)
+    half.write(6, 16, "60% half rate, equivalent channels", cell_text)
+    half.write_number(6, 17, 16, cell_num)
+    half.write(7, 16, "60% half rate, offered Erl at 5%", cell_text)
+    half.write_number(7, 17, table[16], cell_num)
 
     g1800 = workbook.add_worksheet("G1800 TRX Capacity")
     g1800.set_tab_color(blue)
     g1800.set_column("A:G", 22)
     g1800.write("A1", "New G1800 cell capacity at 5% blocking and the design half-rate ratio", title_fmt)
-    g1800.write("A2", "TCH = 8 x TRX - 1 BCCH - one SDCCH for every two TRX. Equivalent channels = TCH x (1 + pHR). Capacity is the 5% Erlang B value. All Cells uses this column to choose how many G1800 TRX bring voice load under pVoiceLoadTarget.", note_fmt)
+    g1800.write("A2", "TCH = 8 x TRX - 1 BCCH - one SDCCH for every two TRX. Capacity is the 60% half-rate column of the Half Rate 5% sheet. All Cells uses this column to choose how many G1800 TRX bring voice load under pVoiceLoadTarget.", note_fmt)
     g1800.set_row(1, 36)
     for col, text in enumerate(["TRX", "Timeslots", "BCCH", "SDCCH", "TCH", "Equivalent channels", "Capacity, Erl"]):
         g1800.write(3, col, text, header)
@@ -863,7 +901,7 @@ def build(records, table):
         g1800.write_formula(row, 4, f"=IF(A{excel_row}=0,0,B{excel_row}-C{excel_row}-D{excel_row})", cell_int, g1800_tch(trx))
         g1800.write_formula(row, 5, f"=E{excel_row}*(1+pHR)", cell_num, g1800_tch(trx) * (1 + defaults()["pHR"]))
         g1800.write_formula(
-            row, 6, "=" + erlang_lookup(f"F{excel_row}"), cell_num,
+            row, 6, "=" + half_rate_lookup(f"E{excel_row}"), cell_num,
             offered_at(g1800_tch(trx) * (1 + defaults()["pHR"]), table),
         )
     workbook.define_name("G1800Cap", f"='G1800 TRX Capacity'!$G$5:$G${5 + G1800_TABLE_TRX}")
@@ -919,7 +957,7 @@ def build(records, table):
         formulas = {
             "Half Rate Traffic Ratio": f'=IF({F("Traffic Volume on TCH_K3014_Avg")}=0,0,{F("TCHH Traffic Volume_K3034_Avg")}/{F("Traffic Volume on TCH_K3014_Avg")})',
             "Equivalent channels": f'={F("Available TCHs_K3015_Avg")}*(1+pHR)',
-            "Capacity, Erl": "=" + erlang_lookup(F("Equivalent channels")),
+            "Capacity, Erl": "=" + half_rate_lookup(F("Available TCHs_K3015_Avg")),
             "Voice Load, %": f'=IF({F("Capacity, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity, Erl")}*100)',
             "TCH Cong, %": f'=IF({F("TCH Congestion_D_Avg")}=0,0,{F("TCH Congestion_N_Avg")}/{F("TCH Congestion_D_Avg")}*100)',
             "SDCCH Cong, %": f'=IF({F("SDCCH Seizure Requests_K3000_Avg")}=0,0,{F("Failed SDCCH Seizures due to Busy SDCCH_K3001_Avg")}/{F("SDCCH Seizure Requests_K3000_Avg")}*100)',
@@ -944,7 +982,7 @@ def build(records, table):
             ),
             "TRX after reduction": f'=IF({F("G900 TRX Reduction")}="Yes",MIN(pTRXKeep,{F("TRX Configured")}),{F("TRX Configured")})',
             "TCH after reduction": f'=IF({F("TRX Configured")}=0,0,{F("Available TCHs_K3015_Avg")}*{F("TRX after reduction")}/{F("TRX Configured")})',
-            "Capacity after reduction, Erl": "=" + erlang_lookup(f'{F("TCH after reduction")}*(1+pHR)'),
+            "Capacity after reduction, Erl": "=" + half_rate_lookup(F("TCH after reduction")),
             "Voice Load after reduction, %": f'=IF({F("Capacity after reduction, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity after reduction, Erl")}*100)',
             "F Load after>=80": f'=IF(AND(ISNUMBER({F("Voice Load after reduction, %")}),{F("Voice Load after reduction, %")}>=pVoiceLoadHigh),1,0)',
             "G1800 TRX for load": (
@@ -983,7 +1021,7 @@ def build(records, table):
             "G1800 Addition": f'=IF(AND({F("Band")}="G900",{F("G1800 TRX Add")}>0),"Yes","No")',
             "TCH final": f'=IF({F("TRX Configured")}=0,0,{F("Available TCHs_K3015_Avg")}*{F("G900 TRX final")}/{F("TRX Configured")})',
             "Capacity final, Erl": (
-                "=" + erlang_lookup(f'{F("TCH final")}*(1+pHR)')
+                "=" + half_rate_lookup(F("TCH final"))
                 + f'+IF({F("G1800 TRX Add")}=0,0,INDEX(G1800Cap,{F("G1800 TRX Add")}+1))'
             ),
             "Voice Load final, %": f'=IF({F("Capacity final, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity final, Erl")}*100)',
@@ -1230,7 +1268,7 @@ def build(records, table):
     summary.set_row(1, 32)
     summary.write(
         "B3",
-        "Capacity Erlang is the 5% Erlang B offered traffic of available TCH x 1.60. "
+        "Capacity Erlang is the 60% half-rate column of the Half Rate 5% sheet, read from physical TCH. "
         "The measured half-rate ratio is still on the sheet and is not used in that capacity. "
         "Voice load is busy-hour K3014 divided by that capacity. Busy-hour Erlang is not multiplied by 24. "
         "Daily traffic is still the hourly average multiplied by 24 and is not used in voice load.",
@@ -1331,7 +1369,7 @@ def build(records, table):
         "G900 TRX Reduction lists every G900 cell that meets all five gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Erlang B table, with available TCH scaled by 2 / configured TRX.",
         "G1800 Addition lists every G900 cell that receives one or more DCS1800 TRX. G1800 for load is the count that takes the pooled voice load under 60%. CDR and bad quality each add one more TRX. High ICM adds one only when nothing else triggered.",
         "A red voice-load-final cell is still at or above 60% after the TRX on that row. Capacity final is the remaining G900 Erlang plus the new G1800 Erlang.",
-        "All Cells holds the live formulas. Gray columns are date averages. Equivalent channels and Capacity, Erl read the Erlang B 5% sheet. Thresholds are on Parameters.",
+        "All Cells holds the live formulas. Gray columns are date averages. Capacity, Erl reads the 60% column of the Half Rate 5% sheet. Thresholds are on Parameters.",
         "The two action sheets stay at the thresholds saved with this file. Changing a yellow parameter recalculates All Cells and this Summary.",
     ]
     for index, text in enumerate(notes):
@@ -1364,14 +1402,14 @@ def build(records, table):
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v9, the same decision as capacity v9, v10, and v11. Open the v9 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. The Store sheet lists each rule version beside its capacity file.",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v9. Open the v9 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. Capacity is the 60% column of the Half Rate 5% sheet.",
         "",
         "Capacity",
-        "Capacity, Erl is the Erlang B offered traffic at 5% blocking. The channel count is Available TCHs_K3015_Avg x (1 + 0.60). The 0.60 is pHR, the design half-rate ratio.",
-        "Half Rate Traffic Ratio is still K3034 / K3014 from the busy hour. It is not used in Capacity, Erl.",
+        "Capacity, Erl is the Offered Erl at 5% on the Half Rate 5% sheet, 60% half-rate column, for the physical TCH count. A fractional TCH is the straight line between the two nearest rows.",
+        "Half Rate Traffic Ratio is still K3034 / K3014 from the busy hour. It is not used in Capacity, Erl. The design half rate is 60%.",
         "Voice Load, % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour and is not multiplied by 24.",
-        "The Erlang B 5% sheet is the lookup. A channel count between two rows is read on the straight line between those rows. G1800 TRX Capacity is the same table applied to a new DCS1800 cell.",
-        "10 channels at 5% carry 6.22 Erl. 16 channels, 10 TCH at 60% half rate, carry 11.54 Erl.",
+        "G1800 TRX Capacity reads the same 60% column for the new cell's TCH count.",
+        "10 physical TCH at full rate carry 6.22 Erl. The same 10 TCH at 60% half rate carry 11.54 Erl.",
         "",
         "1. G900 TRX reduction, first step",
         "All five must be true. Configured TRX above 2. TCH congestion below 1%. SDCCH congestion below 0.5%. Busy-hour voice load at or below 40%. Busy-hour RR307 above 99%. The gate table is on the v9 sheet.",
@@ -1414,7 +1452,7 @@ def build(records, table):
     order = [
         "Summary", "Store",
         "G900 TRX Reduction", "G1800 Addition", "All Cells",
-        "Erlang B 5%", "G1800 TRX Capacity", "Parameters", "Rules",
+        "Half Rate 5%", "G1800 TRX Capacity", "Parameters", "Rules",
         *[name for name in rule_sheets if name != "Store"],
     ]
     workbook.worksheets_objs.sort(key=lambda item: order.index(item.name))
