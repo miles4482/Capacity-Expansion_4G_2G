@@ -34,6 +34,11 @@ SOURCES = [
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
 VERSION = "v9"
+# Rule1 v1 in GSM_Rules_Store_v1.xlsx is this workbook's rule set.
+# A later rule change keeps that store file and writes the next store version.
+ACTIVE_RULE = "Rule1"
+ACTIVE_RULE_VERSION = "v1"
+ACTIVE_RULE_FILE = "GSM_Rules_Store_v1.xlsx"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
