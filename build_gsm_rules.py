@@ -3,17 +3,17 @@
 
 Rule versions are v1, v2, v3, and so on. Each one sits beside the capacity
 file version that used it. GSM_Rules_Store_v1.xlsx stays as the first store.
-This writer builds GSM_Rules_Store_v6.xlsx and can add the same sheets to a
+This writer builds GSM_Rules_Store_v7.xlsx and can add the same sheets to a
 capacity workbook. Each version sheet is the first step, G900 reduction,
 then the second step, G1800 addition. Gridlines are hidden on this workbook.
 """
 
 import xlsxwriter
 
-STORE_VERSION = "v6"
+STORE_VERSION = "v7"
 STORE_FILE = f"GSM_Rules_Store_{STORE_VERSION}.xlsx"
-ACTIVE_RULE = "v10"
-ACTIVE_CAPACITY = "v14"
+ACTIVE_RULE = "v11"
+ACTIVE_CAPACITY = "v15"
 SAVED = "9 Nov 2026"
 # Rule sheets start at column C, two columns in from the left edge.
 START = 2
@@ -74,13 +74,21 @@ NEW_G1800 = [
     "High ICM. If ICM band 4-5 is above 50%, and the reduction, the 80% load line, CDR, and bad quality did not trigger, add 1 G1800 TRX.",
 ]
 NEW_CLOSE = "The four G1800 counts are added. A cell that needs 3 TRX for load and also has CDR_N at least 10 receives 4 G1800 TRX."
-NEW_CAPACITY = "Capacity, Erl is the 60% half-rate column of the Half Rate 5% sheet, Offered Erl at 5%, read from physical TCH. Voice load % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour. Capacity v9 through v12 used the Erlang B channel table. Capacity v13 and v14 use this Half Rate 5% sheet."
+NEW_CAPACITY = "Capacity, Erl is the 60% half-rate column of the Half Rate 5% sheet, Offered Erl at 5%, read from physical TCH. Voice load % = busy-hour K3014 / Capacity x 100. Busy-hour K3014 is already one hour. Capacity v9 through v12 used the Erlang B channel table. Capacity v13 through v15 use this Half Rate 5% sheet."
 V10_GATES = [
     ("These must be true. Busy-hour RR307 above 99% is not a gate.", [
         ("Configured TRX", "above 2"),
         ("Busy-hour voice load", "at or below 40%"),
         ("TCH congestion", "below 1%. If busy-hour RR307 is below 98%, ignore this check."),
         ("SDCCH congestion", "below 0.5%. If busy-hour RR307 is below 98%, ignore this check."),
+    ]),
+]
+V11_GATES = [
+    ("These must be true. Busy-hour RR307 above 99% is not a gate.", [
+        ("Configured TRX", "above 2"),
+        ("Busy-hour voice load", "at or below 40%"),
+        ("TCH congestion", "below 1%. If busy-hour RR307 is below 95%, ignore this check."),
+        ("SDCCH congestion", "below 0.5%. If busy-hour RR307 is below 95%, ignore this check."),
     ]),
 ]
 
@@ -111,6 +119,7 @@ RULES = [
     rule_page("v8", "v8", "Erlang B at 5% and a fixed 60% half rate. The extra G900 removal can take a second TRX. This file removed 3,618 G900 TRX and added 2,999 G1800 TRX.", NEW_GATES, NEW_AFTER, V8_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
     rule_page("v9", "v9", "Same G1800 step as v8. The extra G900 removal is one TRX. Capacity v9 through v12 removed 3,608 G900 TRX and added 2,999 G1800 TRX. Capacity v13 uses the Half Rate 5% sheet.", NEW_GATES, NEW_AFTER, V9_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
     rule_page("v10", "v14", "The busy-hour RR307 above 99% gate is removed. TCH congestion and SDCCH congestion are ignored when busy-hour RR307 is below 98%. The G1800 step is unchanged.", V10_GATES, NEW_AFTER, V9_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
+    rule_page("v11", "v15", "Same gates as v10, except congestion is ignored when busy-hour RR307 is below 95% rather than 98%. The G1800 step is unchanged.", V11_GATES, NEW_AFTER, V9_MORE, NEW_G1800_INTRO, NEW_G1800, NEW_CLOSE, NEW_CAPACITY),
 ]
 
 CATALOG = [(item["rule"], item["capacity"], "Kept", item["note"]) for item in RULES if item["rule"] != ACTIVE_RULE]
@@ -118,7 +127,7 @@ CATALOG.append(("v9", "v10", "Kept", "Same rule v9. First capacity file that car
 CATALOG.append(("v9", "v11", "Kept", "Same rule v9."))
 CATALOG.append(("v9", "v12", "Kept", "Same rule v9. The version sheet is the two steps, with the gate table."))
 CATALOG.append(("v9", "v13", "Kept", "Same rule v9. Capacity is the 60% column of the Half Rate 5% sheet."))
-CATALOG.append((ACTIVE_RULE, ACTIVE_CAPACITY, "Active", "Active capacity file. The RR307 above 99% gate is removed. Congestion is ignored when RR307 is below 98%."))
+CATALOG.append((ACTIVE_RULE, ACTIVE_CAPACITY, "Active", "Active capacity file. Congestion is ignored when RR307 is below 95%."))
 
 
 def formats(workbook):
@@ -140,7 +149,7 @@ def formats(workbook):
 
 
 def add_rule_sheets(workbook, rules_file=False):
-    """Add Store, v1 through v10, and Examples. Gridlines stay off only in the rules workbook."""
+    """Add Store, v1 through v11, and Examples. Gridlines stay off only in the rules workbook."""
     fmt = formats(workbook)
     write_store(workbook, fmt, rules_file)
     for item in RULES:
@@ -186,9 +195,9 @@ def write_store(workbook, fmt, rules_file):
         sheet.set_row(row, 32)
     note_row = 7 + len(CATALOG)
     notes = [
-        "Earlier store files stay in the repo. This v6 store writes each rule as the two steps, two columns in from the left.",
+        "Earlier store files stay in the repo. This v7 store writes each rule as the two steps, two columns in from the left.",
         "A changed rule is the next rule version, saved in the next store file, with the next capacity file version beside it.",
-        "Capacity v14 reads Offered Erl at 5% from the 60% column of the Half Rate 5% sheet. Rule v10 is the active decision.",
+        "Capacity v15 reads Offered Erl at 5% from the 60% column of the Half Rate 5% sheet. Rule v11 is the active decision.",
     ]
     for offset, line in enumerate(notes):
         sheet.merge_range(note_row + offset, START, note_row + offset, START + 4, line, fmt["text"])
@@ -249,17 +258,17 @@ def write_examples(workbook, fmt, rules_file):
     sheet = workbook.add_worksheet("Examples")
     prepare_sheet(sheet, rules_file)
     sheet.set_tab_color(GREEN)
-    sheet.write(0, START, "Examples for rule v10", fmt["title"])
+    sheet.write(0, START, "Examples for rule v11", fmt["title"])
     sheet.merge_range(
         1, START, 1, START + 21,
-        f"These rows are rule v10, the decision in {capacity_file(ACTIVE_CAPACITY)}.",
+        f"These rows are rule v11, the decision in {capacity_file(ACTIVE_CAPACITY)}.",
         fmt["open"],
     )
     headers = [
         "Case", "Band", "TRX", "Voice %", "TCH cong %", "SDCCH cong %", "RR307",
         "CDR_N", "DL %", "UL %", "ICM %", "K3014 Erl", "Available TCH",
         "Reduction", "TRX final", "TRX removed", "G1800 add",
-        "For load", "For CDR", "For quality", "For ICM", "What rule v10 does",
+        "For load", "For CDR", "For quality", "For ICM", "What rule v11 does",
     ]
     for col, header in enumerate(headers):
         sheet.set_column(START + col, START + col, 32 if col == 0 else 64 if col == 21 else 16)
@@ -267,9 +276,10 @@ def write_examples(workbook, fmt, rules_file):
         sheet.write(4, START + col, header, fmt["header"])
     cases = [
         ("Quiet cell, TRX voice and congestion", "G900", 4, 20, 0.2, 0.1, 99.5, 1, 0.4, 0.4, 10, 2.0, 30, "Keep 2 TRX. No G1800 add."),
-        ("RR307 below 98, congestion ignored", "G900", 4, 20, 5, 3, 97.5, 1, 0.4, 0.4, 10, 2.0, 30, "Keep 2 TRX. Congestion is ignored because RR307 is below 98%."),
-        ("RR307 at 98, high TCH congestion", "G900", 4, 20, 5, 0.1, 98, 1, 0.4, 0.4, 10, 2.0, 30, "No reduction. RR307 is not below 98%, so TCH congestion still blocks the cut."),
-        ("RR307 between 98 and 99", "G900", 4, 20, 0.2, 0.1, 98.4, 1, 0.4, 0.4, 10, 2.0, 30, "Keep 2 TRX. RR307 above 99% is not required."),
+        ("RR307 below 95, congestion ignored", "G900", 4, 20, 5, 3, 94.5, 1, 0.4, 0.4, 10, 2.0, 30, "Keep 2 TRX. Congestion is ignored because RR307 is below 95%."),
+        ("RR307 at 95, high TCH congestion", "G900", 4, 20, 5, 0.1, 95, 1, 0.4, 0.4, 10, 2.0, 30, "No reduction. RR307 is not below 95%, so TCH congestion still blocks the cut."),
+        ("RR307 at 96, high TCH congestion", "G900", 4, 20, 5, 0.1, 96, 1, 0.4, 0.4, 10, 2.0, 30, "No reduction. 96% is not below 95%, so congestion still applies."),
+        ("RR307 between 95 and 99", "G900", 4, 20, 0.2, 0.1, 96, 1, 0.4, 0.4, 10, 2.0, 30, "Keep 2 TRX. RR307 above 99% is not required."),
         ("Voice already high, only 2 TRX", "G900", 2, 90, 0.1, 0.1, 100, 0, 0.1, 0.1, 1, 16, 14, "No reduction. G1800 comes from the load rule. No extra G900 removal."),
         ("CDR and bad quality, 4 TRX", "G900", 4, 50, 0.2, 0.2, 100, 12, 3, 3, 80, 8, 30, "Add 2 G1800 TRX. Remove exactly 1 G900 TRX."),
         ("High ICM only, 4 TRX", "G900", 4, 20, 2, 0.2, 99, 1, 0.2, 0.2, 70, 3, 30, "Add 1 G1800 TRX and remove 1 G900 TRX."),

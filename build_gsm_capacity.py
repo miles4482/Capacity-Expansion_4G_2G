@@ -33,13 +33,13 @@ SOURCES = [
     ("V2", "Daily", "2G Capacity File_V2_Daily.rar", "2G Capacity File_V2_Daily.csv"),
 ]
 # Bump VERSION on every workbook change. Keep the earlier version files.
-VERSION = "v14"
-# Rule v10 is the decision in this file.
+VERSION = "v15"
+# Rule v11 is the decision in this file.
 # Each version sheet is G900 reduction first, then G1800 addition.
-# GSM_Rules_Store_v6.xlsx is the same store.
+# GSM_Rules_Store_v7.xlsx is the same store.
 # Capacity is read from the Half Rate 5% sheet, 60% column.
-ACTIVE_RULE = "v10"
-ACTIVE_RULE_FILE = "GSM_Rules_Store_v6.xlsx"
+ACTIVE_RULE = "v11"
+ACTIVE_RULE_FILE = "GSM_Rules_Store_v7.xlsx"
 OUT = f"GSM_Capacity_Enhancement_{VERSION}.xlsx"
 GOS = 0.05
 ERLANG_MAX = 200
@@ -99,7 +99,7 @@ PARAMS = [
     ("pTCHCongMax", 1, "%", "G900 reduction AND gate: TCH congestion must be below this"),
     ("pSDCCHCongMax", 0.5, "%", "G900 reduction AND gate: SDCCH congestion must be below this"),
     ("pVoiceLoadMax", 40, "%", "G900 reduction AND gate: busy-hour voice load must be at or below this"),
-    ("pRR307Ignore", 98, "%", "If busy-hour RR307 is below this, ignore the TCH and SDCCH congestion gates. RR307 above 99% is not a gate"),
+    ("pRR307Ignore", 95, "%", "If busy-hour RR307 is below this, ignore the TCH and SDCCH congestion gates. RR307 above 99% is not a gate"),
     ("pHR", 0.6, "ratio", "Design half-rate ratio for Erlang B capacity. Equivalent channels = available TCH x (1 + this). The measured K3034/K3014 ratio is not used"),
     ("pVoiceLoadHigh", 80, "%", "After the G900 reduction step, voice load at or above this starts the G1800 TRX calculation"),
     ("pVoiceLoadTarget", 60, "%", "G1800 TRX are added until busy-hour voice load is below this"),
@@ -268,7 +268,7 @@ def decide(band, trx, voice, tch_cong, sdcch_cong, rr307, cdr_n, dl, ul, icm, ca
     """Mirror of the All Cells formulas at the saved parameter values."""
     g900 = band == "G900"
     load_ok = voice is not None and voice <= cfg["pVoiceLoadMax"]
-    # RR307 above 99% is not a gate. Below 98%, both congestion gates are skipped.
+    # RR307 above 99% is not a gate. Below 95%, both congestion gates are skipped.
     ignore_cong = rr307 < cfg["pRR307Ignore"]
     tch_ok = ignore_cong or tch_cong < cfg["pTCHCongMax"]
     sdcch_ok = ignore_cong or sdcch_cong < cfg["pSDCCHCongMax"]
@@ -340,18 +340,22 @@ def self_check(table, caps):
     quiet = decide("G900", 4, 20, 0.2, 0.1, 99.5, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
     if not (quiet["reduce"] and quiet["trx_final"] == 2 and quiet["n_add"] == 0 and quiet["trx_remove"] == 2):
         raise SystemExit(f"quiet reduction failed: {quiet}")
-    # RR307 below 98 ignores congestion, even when both congestion values are high.
-    skipped = decide("G900", 4, 20, 5.0, 3.0, 97.5, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
+    # RR307 below 95 ignores congestion, even when both congestion values are high.
+    skipped = decide("G900", 4, 20, 5.0, 3.0, 94.5, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
     if not (skipped["reduce"] and skipped["trx_final"] == 2 and skipped["n_add"] == 0):
         raise SystemExit(f"low RR307 should ignore congestion: {skipped}")
-    # At 98 the congestion gates still apply, so high TCH congestion blocks the cut.
-    held = decide("G900", 4, 20, 5.0, 0.1, 98, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
+    # At 95 the congestion gates still apply, so high TCH congestion blocks the cut.
+    held = decide("G900", 4, 20, 5.0, 0.1, 95, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
     if held["reduce"]:
-        raise SystemExit(f"RR307 at 98 should still test congestion: {held}")
-    # RR307 between 98 and 99 is no longer a block when congestion is low.
-    mid = decide("G900", 4, 20, 0.2, 0.1, 98.4, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
+        raise SystemExit(f"RR307 at 95 should still test congestion: {held}")
+    # Between 95 and 98, congestion is no longer ignored.
+    between = decide("G900", 4, 20, 5.0, 0.1, 96, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
+    if between["reduce"]:
+        raise SystemExit(f"RR307 at 96 should still test congestion: {between}")
+    # RR307 between 95 and 99 is no longer a block when congestion is low.
+    mid = decide("G900", 4, 20, 0.2, 0.1, 96, 1, 0.4, 0.4, 10, 2.0, 30, table, caps, cfg)
     if not (mid["reduce"] and mid["trx_final"] == 2):
-        raise SystemExit(f"RR307 between 98 and 99 should reduce: {mid}")
+        raise SystemExit(f"RR307 between 95 and 99 should reduce: {mid}")
     # TRX is 2, so the reduction gate fails. Load is already high, so G1800 is sized from the table.
     hot = decide("G900", 2, 90, 0.1, 0.1, 100, 0, 0.1, 0.1, 1, 16, 14, table, caps, cfg)
     if hot["reduce"] or hot["n_load"] < 1 or hot["trx_final"] != 2:
@@ -792,7 +796,7 @@ def build(records, table):
         ("F TCH Cong<1", "flag", 13),
         ("F SDCCH Cong<0.5", "flag", 15),
         ("F Load<=40", "flag", 12),
-        ("F RR307<98", "flag", 13),
+        ("F RR307<95", "flag", 13),
         ("G900 TRX Reduction", "formula_center", 16),
         ("TRX after reduction", "formula_int", 14),
         ("TCH after reduction", "formula_num", 16),
@@ -993,11 +997,11 @@ def build(records, table):
             "F TCH Cong<1": f'=IF({F("TCH Cong, %")}<pTCHCongMax,1,0)',
             "F SDCCH Cong<0.5": f'=IF({F("SDCCH Cong, %")}<pSDCCHCongMax,1,0)',
             "F Load<=40": f'=IF(AND(ISNUMBER({F("Voice Load, %")}),{F("Voice Load, %")}<=pVoiceLoadMax),1,0)',
-            "F RR307<98": f'=IF({F("TCH Availability_RR307_Avg")}<pRR307Ignore,1,0)',
+            "F RR307<95": f'=IF({F("TCH Availability_RR307_Avg")}<pRR307Ignore,1,0)',
             "G900 TRX Reduction": (
                 f'=IF(AND({F("Band")}="G900",{F("F TRX>2")}=1,{F("F Load<=40")}=1,'
-                f'OR({F("F RR307<98")}=1,{F("F TCH Cong<1")}=1),'
-                f'OR({F("F RR307<98")}=1,{F("F SDCCH Cong<0.5")}=1)),"Yes","No")'
+                f'OR({F("F RR307<95")}=1,{F("F TCH Cong<1")}=1),'
+                f'OR({F("F RR307<95")}=1,{F("F SDCCH Cong<0.5")}=1)),"Yes","No")'
             ),
             "TRX after reduction": f'=IF({F("G900 TRX Reduction")}="Yes",MIN(pTRXKeep,{F("TRX Configured")}),{F("TRX Configured")})',
             "TCH after reduction": f'=IF({F("TRX Configured")}=0,0,{F("Available TCHs_K3015_Avg")}*{F("TRX after reduction")}/{F("TRX Configured")})',
@@ -1046,7 +1050,7 @@ def build(records, table):
             "Voice Load final, %": f'=IF({F("Capacity final, Erl")}=0,"",{F("Traffic Volume on TCH_K3014_Avg")}/{F("Capacity final, Erl")}*100)',
             "Reduction Reason": (
                 f'=IF({F("G900 TRX Reduction")}<>"Yes","",'
-                f'IF({F("F RR307<98")}=1,'
+                f'IF({F("F RR307<95")}=1,'
                 f'"TRX>"&pTRXAbove&", voice load<="&pVoiceLoadMax&"%, RR307<"&pRR307Ignore&"% so TCH and SDCCH congestion are ignored",'
                 f'"TRX>"&pTRXAbove&", TCH cong<"&pTCHCongMax&"%, SDCCH cong<"&pSDCCHCongMax&"%, voice load<="&pVoiceLoadMax&"%"))'
             ),
@@ -1099,7 +1103,7 @@ def build(records, table):
             "F TCH Cong<1": 1 if item["tch_cong"] < defaults()["pTCHCongMax"] else 0,
             "F SDCCH Cong<0.5": 1 if item["sdcch_cong"] < defaults()["pSDCCHCongMax"] else 0,
             "F Load<=40": 1 if item["voice"] is not None and item["voice"] <= defaults()["pVoiceLoadMax"] else 0,
-            "F RR307<98": 1 if item["rr307"] < defaults()["pRR307Ignore"] else 0,
+            "F RR307<95": 1 if item["rr307"] < defaults()["pRR307Ignore"] else 0,
             "G900 TRX Reduction": "Yes" if plan["reduce"] else "No",
             "TRX after reduction": plan["trx_after"],
             "TCH after reduction": tch_for_trx(item["avail"], item["trx"], plan["trx_after"]),
@@ -1285,7 +1289,7 @@ def build(records, table):
     summary.set_column("F:I", 16)
     summary.hide_gridlines(2)
     summary.write("B1", f"GSM capacity enhancement {VERSION}", title_fmt)
-    summary.write("B2", f"{VERSION}. Rule v10. G900 TRX reduction is the first step. G1800 TRX addition is the second step. The v10 sheet has the gate table.", section_fmt)
+    summary.write("B2", f"{VERSION}. Rule v11. G900 TRX reduction is the first step. G1800 TRX addition is the second step. The v11 sheet has the gate table.", section_fmt)
     summary.set_row(1, 32)
     summary.write(
         "B3",
@@ -1387,7 +1391,7 @@ def build(records, table):
     note_row = total_row + 2
     summary.write(note_row, 1, "How to read the result", section_fmt)
     notes = [
-        "G900 TRX Reduction lists every G900 cell that meets the v10 gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Half Rate 5% sheet, with available TCH scaled by 2 / configured TRX.",
+        "G900 TRX Reduction lists every G900 cell that meets the v11 gates and is cut to 2 TRX. Voice load after that cut is recalculated from the Half Rate 5% sheet, with available TCH scaled by 2 / configured TRX.",
         "G1800 Addition lists every G900 cell that receives one or more DCS1800 TRX. G1800 for load is the count that takes the pooled voice load under 60%. CDR and bad quality each add one more TRX. High ICM adds one only when nothing else triggered.",
         "A red voice-load-final cell is still at or above 60% after the TRX on that row. Capacity final is the remaining G900 Erlang plus the new G1800 Erlang.",
         "All Cells holds the live formulas. Gray columns are date averages. Capacity, Erl reads the 60% column of the Half Rate 5% sheet. Thresholds are on Parameters.",
@@ -1423,7 +1427,7 @@ def build(records, table):
     rule_lines = [
         "",
         "Version",
-        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v10. Open the v10 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. Capacity is the 60% column of the Half Rate 5% sheet.",
+        f"This workbook is {VERSION}: GSM_Capacity_Enhancement_{VERSION}.xlsx. Its decision is rule v11. Open the v11 sheet: G900 reduction is the first step, with the gate table, and G1800 addition is the second step. Capacity is the 60% column of the Half Rate 5% sheet.",
         "",
         "Capacity",
         "Capacity, Erl is the Offered Erl at 5% on the Half Rate 5% sheet, 60% half-rate column, for the physical TCH count. A fractional TCH is the straight line between the two nearest rows.",
@@ -1433,7 +1437,7 @@ def build(records, table):
         "10 physical TCH at full rate carry 6.22 Erl. The same 10 TCH at 60% half rate carry 11.54 Erl.",
         "",
         "1. G900 TRX reduction, first step",
-        "Configured TRX above 2. Busy-hour voice load at or below 40%. TCH congestion below 1%, and SDCCH congestion below 0.5%, unless busy-hour RR307 is below 98%. When RR307 is below 98%, both congestion checks are ignored. Busy-hour RR307 above 99% is not a gate. The gate table is on the v10 sheet.",
+        "Configured TRX above 2. Busy-hour voice load at or below 40%. TCH congestion below 1%, and SDCCH congestion below 0.5%, unless busy-hour RR307 is below 95%. When RR307 is below 95%, both congestion checks are ignored. Busy-hour RR307 above 99% is not a gate. The gate table is on the v11 sheet.",
         "The cell then keeps 2 TRX. TCH after the cut = available TCH x 2 / configured TRX, and voice load is recalculated from that.",
         "If 3 or more TRX are still there after this step, and the G1800 step is adding a TRX for CDR, bad quality, or high ICM, remove exactly 1 more G900 TRX. A cell already at 2 loses nothing more.",
         "",
